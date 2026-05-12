@@ -1,0 +1,11 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+/tmp/output.xlsx
+logs/
+*.xlsx
+!tests/fixtures/*.xlsx
