@@ -1,0 +1,190 @@
+{
+  "list_chats_response": {
+    "data": [
+      {
+        "id": "ch_16d3f9a9-e74d-56e7-b974-264d29597e81",
+        "prompt": {
+          "id": "pr_06029e2f-77f9-4149-afbc-849db9b87a29"
+        },
+        "model": {
+          "id": "perplexity-scraper"
+        },
+        "model_channel": {
+          "id": "perplexity-0"
+        },
+        "date": "2026-05-05"
+      },
+      {
+        "id": "ch_1b389c81-e2a0-5b58-9759-c8b8e66f1231",
+        "prompt": {
+          "id": "pr_09831ec2-3876-476c-898c-069fa33b2878"
+        },
+        "model": {
+          "id": "chatgpt-scraper"
+        },
+        "model_channel": {
+          "id": "openai-0"
+        },
+        "date": "2026-05-05"
+      },
+      {
+        "id": "ch_2e112919-6261-5e4f-add1-53b76461c36e",
+        "prompt": {
+          "id": "pr_09831ec2-3876-476c-898c-069fa33b2878"
+        },
+        "model": {
+          "id": "perplexity-scraper"
+        },
+        "model_channel": {
+          "id": "perplexity-0"
+        },
+        "date": "2026-05-05"
+      }
+    ],
+    "totalCount": 589
+  },
+  "get_chat_response": {
+    "id": "ch_417d426e-34c5-5adb-a555-0c20171a5846",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Best place to stay near UC Berkeley (UCB/CAL) for a campus visit, with easy transit and a quiet place to work"
+      },
+      {
+        "role": "assistant",
+        "content": "For a UC Berkeley campus visit... [truncated for fixture]"
+      }
+    ],
+    "brands_mentioned": [
+      {
+        "id": "kw_f8c61b8d-fefe-4aea-b6db-a57f44c602b9",
+        "name": "Residence Inn by Marriott Berkeley",
+        "position": 1
+      },
+      {
+        "id": "kw_85a155fd-e8f2-4beb-8f76-16aa7bd715e4",
+        "name": "Hotel Shattuck Plaza",
+        "position": 2
+      },
+      {
+        "id": "kw_78116ae2-09c5-4523-a7bb-e5a4a13893b9",
+        "name": "Claremont Resort",
+        "position": 3
+      }
+    ],
+    "sources": [
+      {
+        "url": "https://www.visitberkeley.com/where-to-stay/",
+        "urlNormalized": "visitberkeley.com/where-to-stay",
+        "domain": "visitberkeley.com",
+        "citationCount": 2,
+        "citationPosition": 1
+      },
+      {
+        "url": "https://visit.berkeley.edu/planning-your-day/lodging-and-dining",
+        "urlNormalized": "visit.berkeley.edu/planning-your-day/lodging-and-dining",
+        "domain": "berkeley.edu",
+        "citationCount": 2,
+        "citationPosition": 2
+      }
+    ],
+    "queries": [
+      "best hotels near UC Berkeley campus where to stay Berkeley CA quiet hotel transit BART downtown Berkeley hotels for visitors"
+    ],
+    "products": [],
+    "prompt": {
+      "id": "pr_0b9d96b9-c801-4965-81e3-e2931e1150b9"
+    },
+    "model": {
+      "id": "chatgpt-scraper"
+    },
+    "model_channel": {
+      "id": "openai-0"
+    }
+  },
+  "get_brand_report_chat_dimension_response": {
+    "columns": [
+      "brand_id",
+      "brand_name",
+      "visibility",
+      "visibility_count",
+      "visibility_total",
+      "mention_count",
+      "share_of_voice",
+      "sentiment",
+      "sentiment_sum",
+      "sentiment_count",
+      "position",
+      "position_sum",
+      "position_count",
+      "chat_id"
+    ],
+    "rows": [
+      [
+        "kw_78116ae2-09c5-4523-a7bb-e5a4a13893b9",
+        "Claremont Resort",
+        1,
+        1,
+        1,
+        3,
+        0.38,
+        87,
+        1.4995269775390625,
+        2,
+        4,
+        4,
+        1,
+        "ch_417d426e-34c5-5adb-a555-0c20171a5846"
+      ],
+      [
+        "kw_85a155fd-e8f2-4beb-8f76-16aa7bd715e4",
+        "Hotel Shattuck Plaza",
+        1,
+        1,
+        1,
+        3,
+        0.38,
+        68,
+        0.7311248779296875,
+        2,
+        3,
+        3,
+        1,
+        "ch_417d426e-34c5-5adb-a555-0c20171a5846"
+      ],
+      [
+        "kw_f8c61b8d-fefe-4aea-b6db-a57f44c602b9",
+        "Residence Inn by Marriott Berkeley",
+        1,
+        1,
+        1,
+        2,
+        0.25,
+        79,
+        0.5830230712890625,
+        1,
+        1,
+        1,
+        1,
+        "ch_417d426e-34c5-5adb-a555-0c20171a5846"
+      ],
+      [
+        "kw_397c203f-a67e-470d-804e-dabed0189bfc",
+        "The Meritage Resort & Spa",
+        0,
+        0,
+        1,
+        0,
+        0,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        "ch_417d426e-34c5-5adb-a555-0c20171a5846"
+      ]
+    ],
+    "rowCount": 17
+  }
+}
