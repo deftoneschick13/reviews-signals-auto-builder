@@ -10,6 +10,7 @@ from src.analyzers.ai_platform_response import (
     PlatformResponseRow,
     build_ai_platform_response,
 )
+from src.analyzers.benchmarking import BenchmarkRow, build_benchmarking
 from src.analyzers.sentiment_cooccurrence import (
     CoOccurrenceRow,
     DetailedSentimentRow,
@@ -67,8 +68,9 @@ def build_workbook(
     sc_ws = wb.create_sheet("Sentiment & Co-Occurrence")
     _build_sentiment_cooccurrence_sheet(sc_ws, sc_summary, sc_coocc, sc_detailed, brand_name, date_range_str)
 
+    bm_data = build_benchmarking(chats, prompt_library, brand_name)
     bm_ws = wb.create_sheet("Benchmarking")
-    _build_stub(bm_ws, "Benchmarking", brand_name, date_range_str)
+    _build_benchmarking_sheet(bm_ws, bm_data, brand_name, date_range_str)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +178,65 @@ def _build_ai_platform_response_sheet(
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
     ws.freeze_panes = "A3"
+
+
+_BM_N_COLS = 5
+_BM_COL_WIDTHS = {1: 30, 2: 20, 3: 15, 4: 15, 5: 40}
+_BM_HEADERS = ["Brand", "Mention Rate", "Avg. Position", "Avg. Sentiment", "Dominant Themes"]
+
+
+def _build_benchmarking_sheet(
+    ws: Worksheet,
+    data: dict,
+    brand_name: str,
+    date_range_str: str,
+) -> None:
+    n = _BM_N_COLS
+    r = 1
+
+    _merge_write(
+        ws, r, n,
+        f"Benchmarking — {brand_name} — {date_range_str}",
+        TITLE_FONT, TITLE_FILL, height=24,
+    )
+    r += 1
+
+    r += 1  # blank
+
+    for category in CATEGORIES_ORDERED:
+        _merge_write(ws, r, n, category, SECTION_FONT, SECTION_FILL, height=20)
+        r += 1
+
+        for col_idx, h in enumerate(_BM_HEADERS, start=1):
+            c = ws.cell(row=r, column=col_idx, value=h)
+            c.font = HEADER_FONT
+            c.fill = HEADER_FILL
+            c.alignment = WRAP_TOP
+        r += 1
+
+        rows: list[BenchmarkRow] = data.get(category, [])
+        for i, br in enumerate(rows):
+            values = [br.brand, br.mention_rate, br.avg_position, br.avg_sentiment, br.dominant_themes]
+            for col_idx, v in enumerate(values, start=1):
+                c = ws.cell(row=r, column=col_idx, value=v)
+                c.font = DATA_FONT
+                c.alignment = WRAP_TOP
+                c.border = THIN_GRAY
+            # Bold the focal brand name (first row per section)
+            if i == 0:
+                from openpyxl.styles import Font
+                cell = ws.cell(row=r, column=1)
+                cell.font = Font(
+                    name=DATA_FONT.name,
+                    size=DATA_FONT.size,
+                    bold=True,
+                )
+            r += 1
+
+        r += 1  # blank separator
+
+    for col_idx, width in _BM_COL_WIDTHS.items():
+        ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
 
 _SC_N_COLS = 8

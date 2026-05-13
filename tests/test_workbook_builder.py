@@ -92,13 +92,10 @@ def test_source_attribution_tab_freeze_panes_at_A4(built_wb):
     assert str(ws.freeze_panes) == "A4"
 
 
-def test_stub_tabs_have_only_title_and_placeholder(built_wb):
-    for name in SHEET_NAMES[3:]:  # only Benchmarking remains as a stub
-        ws = built_wb[name]
-        assert name in ws["A1"].value
-        assert ws["A2"].value == "(populated in a later step)"
-        # Row 3 should be empty (no headers in stubs)
-        assert ws.cell(row=3, column=1).value is None
+def test_benchmarking_tab_has_title_in_A1(built_wb):
+    ws = built_wb["Benchmarking"]
+    assert "Benchmarking" in ws["A1"].value
+    assert BRAND in ws["A1"].value
 
 
 def test_build_workbook_with_empty_chats_produces_valid_file(tmp_path):
@@ -229,3 +226,60 @@ def test_sc_tab_brand_name_substituted_into_column_labels(sc_wb):
     ws = sc_wb["Sentiment & Co-Occurrence"]
     all_values = [ws.cell(row=r, column=c).value for r in range(1, 30) for c in range(1, 9)]
     assert any(v and f"{BRAND} Mentioned" in str(v) for v in all_values)
+
+
+# ---------------------------------------------------------------------------
+# Benchmarking workbook tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def bm_wb(tmp_path):
+    from src.peec_client import Chat
+    from src.matchers import LabeledChat
+    from src.prompt_library import PromptEntry
+
+    chat = Chat(
+        id="ch_1", model="chatgpt-scraper", model_channel="ChatGPT",
+        prompt="Test", response="", country="US", position=1,
+        mentions=[BRAND, "Competitor X"], sources=[], sentiment=70.0, created="2026-05-01",
+    )
+    lc = LabeledChat(chat=chat, prompt_id="DB-01", category="Direct Brand Queries")
+    library = {"DB-01": PromptEntry("DB-01", "Test prompt", "Direct Brand Queries", "", "")}
+    path = build_workbook([lc], library, BRAND, DATE_RANGE, tmp_path / "bm.xlsx")
+    return openpyxl.load_workbook(path)
+
+
+def test_bm_tab_has_three_category_sections(bm_wb):
+    ws = bm_wb["Benchmarking"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 30)]
+    cats = ["Direct Brand Queries", "Category-Based Queries", "Comparison Queries"]
+    for cat in cats:
+        assert any(v and cat in str(v) for v in all_values), f"Missing: {cat}"
+
+
+def test_bm_tab_focal_brand_first_in_each_section(bm_wb):
+    ws = bm_wb["Benchmarking"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 30)]
+    brand_positions = [i for i, v in enumerate(all_values) if v == BRAND]
+    assert len(brand_positions) >= 3  # one per category
+
+
+def test_bm_tab_focal_brand_name_bolded_in_first_column(bm_wb):
+    ws = bm_wb["Benchmarking"]
+    for r in range(1, 30):
+        cell = ws.cell(row=r, column=1)
+        if cell.value == BRAND and cell.font and cell.font.bold:
+            return
+    pytest.fail(f"No bolded cell with value '{BRAND}' found in column A")
+
+
+def test_bm_tab_categories_in_DB_CB_CO_order(bm_wb):
+    ws = bm_wb["Benchmarking"]
+    cats = ["Direct Brand Queries", "Category-Based Queries", "Comparison Queries"]
+    positions = []
+    for r in range(1, 30):
+        v = ws.cell(row=r, column=1).value
+        if v in cats:
+            positions.append((r, v))
+    found = [cat for _, cat in positions]
+    assert found == cats

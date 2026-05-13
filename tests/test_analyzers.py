@@ -3,6 +3,7 @@
 from src.analyzers.source_attribution import SourceRow, build_source_attribution
 from src.analyzers.ai_platform_response import build_ai_platform_response
 from src.analyzers.sentiment_cooccurrence import build_sentiment_cooccurrence
+from src.analyzers.benchmarking import build_benchmarking
 from src.matchers import LabeledChat
 from src.peec_client import Chat
 from src.prompt_library import PromptEntry
@@ -584,3 +585,169 @@ def test_sc_judgment_fields_always_empty():
     assert coocc[0].key_associations == ""
     assert coocc[0].opportunity_threat == ""
     assert detailed[0].key_observations == ""
+
+
+# ---------------------------------------------------------------------------
+# Benchmarking tests
+# ---------------------------------------------------------------------------
+
+def _bm_chat(
+    chat_id: str,
+    mentions: list[str] = None,
+    response: str = "",
+    position=None,
+    sentiment=None,
+) -> Chat:
+    return Chat(
+        id=chat_id, model="chatgpt-scraper", model_channel="ChatGPT",
+        prompt="test", response=response, country="US",
+        position=position, mentions=mentions or [], sources=[],
+        sentiment=sentiment, created="2026-05-01",
+    )
+
+
+def _bm_labeled(chat: Chat, prompt_id: str = "DB-01", category="Direct Brand Queries") -> LabeledChat:
+    return LabeledChat(chat=chat, prompt_id=prompt_id, category=category)  # type: ignore[arg-type]
+
+
+def _bm_library(**kwargs) -> dict:
+    lib = {}
+    for pid, (text, cat) in kwargs.items():
+        lib[pid] = PromptEntry(pid, text, cat, "", "")  # type: ignore[arg-type]
+    return lib
+
+
+def _bm(chats, brand=BRAND, library=None):
+    library = library or _bm_library(**{"DB-01": ("Test", "Direct Brand Queries")})
+    return build_benchmarking(chats, library, brand)
+
+
+def test_bm_focal_brand_always_first_row_in_each_category():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=[BRAND, "Competitor A"])),
+    ]
+    result = _bm(chats)
+    assert result["Direct Brand Queries"][0].brand == BRAND
+
+
+def test_bm_competitors_sorted_by_count_then_name():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=["Alpha", "Beta", "Gamma"])),
+        _bm_labeled(_bm_chat("ch_2", mentions=["Beta", "Gamma"])),
+        _bm_labeled(_bm_chat("ch_3", mentions=["Gamma"])),
+    ]
+    result = _bm(chats)
+    rows = result["Direct Brand Queries"]
+    brands = [r.brand for r in rows[1:]]
+    assert brands == ["Gamma", "Beta", "Alpha"]
+
+
+def test_bm_caps_competitors_at_max():
+    from src.config import MAX_COMPETITORS_PER_BENCHMARK
+    mentions = [f"Comp{i}" for i in range(MAX_COMPETITORS_PER_BENCHMARK + 3)]
+    chats = [_bm_labeled(_bm_chat("ch_1", mentions=mentions))]
+    result = _bm(chats)
+    rows = result["Direct Brand Queries"]
+    # focal brand + at most MAX_COMPETITORS_PER_BENCHMARK competitors
+    assert len(rows) <= MAX_COMPETITORS_PER_BENCHMARK + 1
+
+
+def test_bm_mention_rate_denominator_is_prompts_not_chats():
+    library = _bm_library(**{
+        "DB-01": ("P1", "Direct Brand Queries"),
+        "DB-02": ("P2", "Direct Brand Queries"),
+    })
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=[BRAND]), prompt_id="DB-01"),
+        _bm_labeled(_bm_chat("ch_2", mentions=[BRAND]), prompt_id="DB-01"),  # same prompt
+        _bm_labeled(_bm_chat("ch_3", mentions=[]), prompt_id="DB-02"),
+    ]
+    result = build_benchmarking(chats, library, BRAND)
+    focal = result["Direct Brand Queries"][0]
+    # 1 distinct prompt mentioned out of 2 total
+    assert focal.mention_rate == "1/2 (50%)"
+
+
+def test_bm_focal_brand_uses_response_text_fallback_for_matching():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=[], response=f"{BRAND} is great")),
+    ]
+    result = _bm(chats)
+    focal = result["Direct Brand Queries"][0]
+    assert focal.mention_rate == "1/1 (100%)"
+
+
+def test_bm_competitors_match_only_via_mentions_list():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=[], response="Competitor A is great")),
+    ]
+    result = _bm(chats)
+    rows = result["Direct Brand Queries"]
+    brands = [r.brand for r in rows]
+    assert "Competitor A" not in brands
+
+
+def test_bm_avg_position_skips_none_values():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=[BRAND], position=2)),
+        _bm_labeled(_bm_chat("ch_2", mentions=[BRAND], position=4)),
+        _bm_labeled(_bm_chat("ch_3", mentions=[BRAND], position=None)),
+    ]
+    result = _bm(chats)
+    assert result["Direct Brand Queries"][0].avg_position == "3.0"
+
+
+def test_bm_avg_position_returns_dash_when_no_data():
+    chats = [_bm_labeled(_bm_chat("ch_1", mentions=[BRAND], position=None))]
+    result = _bm(chats)
+    assert result["Direct Brand Queries"][0].avg_position == "-"
+
+
+def test_bm_avg_sentiment_returns_dash_when_no_data():
+    chats = [_bm_labeled(_bm_chat("ch_1", mentions=[BRAND], sentiment=None))]
+    result = _bm(chats)
+    assert result["Direct Brand Queries"][0].avg_sentiment == "-"
+
+
+def test_bm_zero_data_category_still_returns_focal_brand_row():
+    chats = []
+    result = _bm(chats)
+    db_rows = result["Direct Brand Queries"]
+    assert len(db_rows) == 1
+    assert db_rows[0].brand == BRAND
+    assert db_rows[0].mention_rate == "0/0 (—)"
+    assert db_rows[0].avg_position == "-"
+    assert db_rows[0].avg_sentiment == "-"
+
+
+def test_bm_brand_excluded_from_competitor_list():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=[BRAND, "babylon", "Competitor A"])),
+    ]
+    result = _bm(chats)
+    brands = [r.brand for r in result["Direct Brand Queries"]]
+    assert BRAND not in brands[1:]
+    assert "babylon" not in brands
+
+
+def test_bm_all_three_categories_always_returned():
+    result = _bm([])
+    assert set(result.keys()) == {"Direct Brand Queries", "Category-Based Queries", "Comparison Queries"}
+
+
+def test_bm_dominant_themes_always_empty():
+    chats = [_bm_labeled(_bm_chat("ch_1", mentions=[BRAND, "Competitor"]))]
+    result = _bm(chats)
+    for row in result["Direct Brand Queries"]:
+        assert row.dominant_themes == ""
+
+
+def test_bm_competitor_counted_once_per_chat_not_per_mention_occurrence():
+    chats = [
+        _bm_labeled(_bm_chat("ch_1", mentions=["Competitor A", "Competitor A"])),
+        _bm_labeled(_bm_chat("ch_2", mentions=["Competitor A"])),
+    ]
+    result = _bm(chats)
+    comp_row = next(r for r in result["Direct Brand Queries"] if r.brand == "Competitor A")
+    # 2 chats mention it — mention_rate denominator is 1 prompt
+    assert comp_row.mention_rate == "1/1 (100%)"
