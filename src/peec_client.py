@@ -73,7 +73,7 @@ class PeecAPIError(PeecError):
     """Other 4xx/5xx from Peec."""
 
 
-def _request(url: str, params: dict, api_key: str) -> dict:
+def _request(url: str, params, api_key: str) -> dict:
     headers = {"x-api-key": api_key}
     for attempt in range(PEEC_MAX_RETRIES + 1):
         resp = requests.get(url, params=params, headers=headers)
@@ -118,11 +118,115 @@ def _str_list(v) -> list[str]:
     return []
 
 
+def _lookup_brand_id(project_id: str, brand_name: str, api_key: str) -> str | None:
+    """Resolve a brand name to its Peec brand_id. Returns None if not found."""
+    try:
+        resp = _request(f"{PEEC_BASE_URL}/brands", {"project_id": project_id}, api_key)
+    except PeecError as e:
+        log.warning("_lookup_brand_id: /brands call failed: %s", e)
+        return None
+
+    bn_lower = brand_name.lower()
+
+    # Columnar format: {columns: [...], rows: [[...], ...]}
+    columns = resp.get("columns")
+    rows = resp.get("rows") or []
+    if columns and rows:
+        try:
+            id_idx = columns.index("id")
+            name_idx = columns.index("name")
+        except ValueError:
+            return None
+        for row in rows:
+            name_val = str(row[name_idx] or "").lower()
+            if bn_lower in name_val or name_val in bn_lower:
+                return row[id_idx]
+
+    # Object format fallback: {data: [{id, name, ...}]}
+    for item in resp.get("data", []):
+        name_val = str(item.get("name") or "").lower()
+        if bn_lower in name_val or name_val in bn_lower:
+            return item.get("id")
+
+    return None
+
+
+def _fetch_brand_sentiments(
+    project_id: str,
+    start_date: date,
+    end_date: date,
+    brand_name: str,
+    api_key: str,
+) -> dict[str, tuple[Optional[float], Optional[int]]]:
+    """Return {chat_id: (sentiment, position)} for the focal brand.
+
+    Makes one /brand-report call dimensioned by chat_id. Returns empty dict
+    on any failure so the rest of the pipeline continues with sentiment=None.
+    """
+    brand_id = _lookup_brand_id(project_id, brand_name, api_key)
+    if not brand_id:
+        log.warning("_fetch_brand_sentiments: brand '%s' not found — sentiment will be None", brand_name)
+        return {}
+
+    try:
+        resp = _request(
+            f"{PEEC_BASE_URL}/brand-report",
+            [
+                ("project_id", project_id),
+                ("start_date", start_date.isoformat()),
+                ("end_date", end_date.isoformat()),
+                ("dimensions[]", "chat_id"),
+                ("brand_id", brand_id),
+                ("limit", "10000"),
+            ],
+            api_key,
+        )
+    except PeecError as e:
+        log.warning("_fetch_brand_sentiments: /brand-report call failed: %s", e)
+        return {}
+
+    result: dict[str, tuple[Optional[float], Optional[int]]] = {}
+
+    # Columnar format (matches MCP response shape)
+    columns = resp.get("columns")
+    rows = resp.get("rows") or []
+    if columns and rows:
+        try:
+            chat_id_idx = columns.index("chat_id")
+            sentiment_idx = columns.index("sentiment")
+            position_idx = columns.index("position")
+        except ValueError:
+            log.warning("_fetch_brand_sentiments: unexpected columns: %s", columns)
+            return {}
+        for row in rows:
+            cid = row[chat_id_idx]
+            if cid:
+                s = row[sentiment_idx]
+                p = row[position_idx]
+                result[cid] = (
+                    float(s) if s is not None else None,
+                    int(p) if p is not None else None,
+                )
+    else:
+        # Object format fallback
+        for item in resp.get("data", []):
+            cid = item.get("chat_id")
+            if cid:
+                result[cid] = (
+                    _float_or_none(item.get("sentiment")),
+                    _int_or_none(item.get("position")),
+                )
+
+    log.info("_fetch_brand_sentiments: %d records fetched for brand '%s'", len(result), brand_name)
+    return result
+
+
 def fetch_chats(
     project_id: str,
     start_date: date,
     end_date: date,
     api_key: str,
+    brand_name: str = "",
 ) -> list[Chat]:
     """Fetch all chats for a project in a date range.
 
@@ -131,9 +235,12 @@ def fetch_chats(
     Filters out chats whose model_channel is not in INCLUDED_PLATFORMS
     (from src/config.py) BEFORE returning — keeps the Step 3 footprint small.
 
+    If brand_name is provided, fetches per-chat sentiment and position from
+    /brand-report and populates Chat.sentiment and Chat.position accordingly.
+
     Returns Chat objects in the order returned by the API.
     """
-    log.info("fetch_chats: project=%s  %s → %s", project_id, start_date, end_date)
+    log.info("fetch_chats: project=%s  %s → %s  brand=%r", project_id, start_date, end_date, brand_name)
 
     # 1. Paginated list of chat stubs from /chats
     stubs: list[dict] = []
@@ -178,7 +285,13 @@ def fetch_chats(
         country = (p.get("user_location") or {}).get("country", "")
         prompt_cache[p["id"]] = {"text": text, "country": country}
 
-    # 4. Fetch full content per chat and assemble Chat objects
+    # 4. Fetch per-chat sentiment from /brand-report (one call for all chats)
+    sentiments: dict[str, tuple[Optional[float], Optional[int]]] = {}
+    if brand_name and stubs:
+        sentiments = _fetch_brand_sentiments(project_id, start_date, end_date, brand_name, api_key)
+
+    # 5. Fetch full content per chat and assemble Chat objects
+    bn_lower = brand_name.lower() if brand_name else ""
     result: list[Chat] = []
     for stub in stubs:
         chat_id = stub["id"]
@@ -202,6 +315,19 @@ def fetch_chats(
         p_info = prompt_cache.get(stub["prompt"]["id"], {})
         raw_channel = stub["model_channel"]["id"]
 
+        # Use brand_report sentiment/position when available; fall back to brands_mentioned
+        brand_report_sentiment, brand_report_position = sentiments.get(chat_id, (None, None))
+
+        if brand_name and brands:
+            focal = next(
+                (b for b in brands if bn_lower in b.get("name", "").lower()
+                 or b.get("name", "").lower() in bn_lower),
+                None,
+            )
+            content_position = _int_or_none(focal.get("position") if focal else None)
+        else:
+            content_position = _int_or_none(brands[0].get("position") if brands else None)
+
         result.append(Chat(
             id=chat_id,
             model=_str(stub["model"]["id"]),
@@ -209,10 +335,10 @@ def fetch_chats(
             prompt=_str(prompt_text) or _str(p_info.get("text", "")),
             response=_str(response_text),
             country=_str(p_info.get("country", "")),
-            position=_int_or_none(brands[0].get("position") if brands else None),
+            position=brand_report_position if brand_report_position is not None else content_position,
             mentions=_str_list([b.get("name", "") for b in brands]),
             sources=_str_list([s.get("url", "") for s in raw_sources]),
-            sentiment=None,  # requires separate brand_report call; not fetched here
+            sentiment=brand_report_sentiment,
             created=_str(stub.get("date", "")),
         ))
 

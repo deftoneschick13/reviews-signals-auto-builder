@@ -279,7 +279,7 @@ def _handle_build(inputs: dict) -> None:
 
     try:
         with st.spinner("Fetching chats from Peec…"):
-            chats = fetch_chats(inputs["project_id"], start_date, end_date, api_key)
+            chats = fetch_chats(inputs["project_id"], start_date, end_date, api_key, brand_name=brand_name)
         st.info(f"Fetched {len(chats)} chats.")
 
         with st.spinner("Matching chats to prompts…"):
