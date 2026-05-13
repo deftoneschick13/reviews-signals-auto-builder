@@ -93,7 +93,7 @@ def test_source_attribution_tab_freeze_panes_at_A4(built_wb):
 
 
 def test_stub_tabs_have_only_title_and_placeholder(built_wb):
-    for name in SHEET_NAMES[2:]:  # skip source attribution and APR (real sheets)
+    for name in SHEET_NAMES[3:]:  # only Benchmarking remains as a stub
         ws = built_wb[name]
         assert name in ws["A1"].value
         assert ws["A2"].value == "(populated in a later step)"
@@ -167,3 +167,65 @@ def test_apr_tab_writes_empty_placeholder_for_categories_with_no_data(apr_wb):
 def test_apr_tab_freeze_panes_at_A3(apr_wb):
     ws = apr_wb["AI Platform Response Tracking"]
     assert str(ws.freeze_panes) == "A3"
+
+
+# ---------------------------------------------------------------------------
+# Sentiment & Co-Occurrence workbook tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sc_wb(tmp_path):
+    from src.peec_client import Chat
+    from src.matchers import LabeledChat
+    from src.prompt_library import PromptEntry
+
+    chat = Chat(
+        id="ch_1", model="chatgpt-scraper", model_channel="ChatGPT",
+        prompt="Test prompt", response="Babylon Tours is great",
+        country="US", position=1, mentions=["Babylon Tours", "Competitor X"],
+        sources=[], sentiment=75.0, created="2026-05-01",
+    )
+    lc = LabeledChat(chat=chat, prompt_id="DB-01", category="Direct Brand Queries")
+    library = {"DB-01": PromptEntry("DB-01", "Test prompt", "Direct Brand Queries", "", "")}
+    path = build_workbook([lc], library, BRAND, DATE_RANGE, tmp_path / "sc.xlsx")
+    return openpyxl.load_workbook(path)
+
+
+def test_sc_tab_has_three_section_headers(sc_wb):
+    ws = sc_wb["Sentiment & Co-Occurrence"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 40)]
+    assert any(v and "Sentiment Analysis Summary" in str(v) for v in all_values)
+    assert any(v and "Co-Occurrence Analysis" in str(v) for v in all_values)
+    assert any(v and "Detailed Sentiment by Prompt" in str(v) for v in all_values)
+
+
+def test_sc_tab_summary_includes_overall_row(sc_wb):
+    ws = sc_wb["Sentiment & Co-Occurrence"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 30)]
+    assert any(v and "OVERALL" in str(v) for v in all_values)
+
+
+def test_sc_tab_writes_placeholder_for_empty_cooccurrence(tmp_path):
+    from src.peec_client import Chat
+    from src.matchers import LabeledChat
+    from src.prompt_library import PromptEntry
+
+    chat = Chat(
+        id="ch_1", model="chatgpt-scraper", model_channel="ChatGPT",
+        prompt="Test prompt", response="No mentions here",
+        country="US", position=None, mentions=[],
+        sources=[], sentiment=None, created="2026-05-01",
+    )
+    lc = LabeledChat(chat=chat, prompt_id="DB-01", category="Direct Brand Queries")
+    library = {"DB-01": PromptEntry("DB-01", "Test prompt", "Direct Brand Queries", "", "")}
+    path = build_workbook([lc], library, BRAND, DATE_RANGE, tmp_path / "sc_empty.xlsx")
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Sentiment & Co-Occurrence"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 40)]
+    assert any(v and "No co-occurrence data" in str(v) for v in all_values)
+
+
+def test_sc_tab_brand_name_substituted_into_column_labels(sc_wb):
+    ws = sc_wb["Sentiment & Co-Occurrence"]
+    all_values = [ws.cell(row=r, column=c).value for r in range(1, 30) for c in range(1, 9)]
+    assert any(v and f"{BRAND} Mentioned" in str(v) for v in all_values)

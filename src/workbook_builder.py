@@ -10,6 +10,12 @@ from src.analyzers.ai_platform_response import (
     PlatformResponseRow,
     build_ai_platform_response,
 )
+from src.analyzers.sentiment_cooccurrence import (
+    CoOccurrenceRow,
+    DetailedSentimentRow,
+    SummaryRow,
+    build_sentiment_cooccurrence,
+)
 from src.analyzers.source_attribution import SourceRow, build_source_attribution
 from src.matchers import LabeledChat
 from src.prompt_library import PromptEntry
@@ -57,8 +63,9 @@ def build_workbook(
     apr_ws = wb.create_sheet("AI Platform Response Tracking")
     _build_ai_platform_response_sheet(apr_ws, apr_data, brand_name, date_range_str)
 
+    sc_summary, sc_coocc, sc_detailed = build_sentiment_cooccurrence(chats, prompt_library, brand_name)
     sc_ws = wb.create_sheet("Sentiment & Co-Occurrence")
-    _build_stub(sc_ws, "Sentiment & Co-Occurrence", brand_name, date_range_str)
+    _build_sentiment_cooccurrence_sheet(sc_ws, sc_summary, sc_coocc, sc_detailed, brand_name, date_range_str)
 
     bm_ws = wb.create_sheet("Benchmarking")
     _build_stub(bm_ws, "Benchmarking", brand_name, date_range_str)
@@ -169,6 +176,128 @@ def _build_ai_platform_response_sheet(
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
     ws.freeze_panes = "A3"
+
+
+_SC_N_COLS = 8
+_SC_COL_WIDTHS = {1: 22, 2: 40, 3: 22, 4: 22, 5: 22, 6: 20, 7: 22, 8: 22}
+
+_SC_SUMMARY_HEADERS_TPL = [
+    "Category", "Total Prompts", "{brand} Mentioned", "Mention Rate",
+    "Avg. Sentiment Score", "Positive", "Neutral", "Negative",
+]
+_SC_COOCC_HEADERS = [
+    "Brand/Entity", "Co-Occurrence Count", "Relationship Type",
+    "Typical Position vs {brand}", "Key Associations", "Opportunity/Threat",
+]
+_SC_DETAIL_HEADERS_TPL = [
+    "Prompt ID", "Prompt", "Category", "{brand} Mentioned",
+    "Sentiment Score", "Sentiment Label", "Key Observations",
+]
+
+
+def _sc_write_headers(ws: Worksheet, row: int, headers: list[str]) -> None:
+    for col_idx, h in enumerate(headers, start=1):
+        c = ws.cell(row=row, column=col_idx, value=h)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.alignment = WRAP_TOP
+
+
+def _build_sentiment_cooccurrence_sheet(
+    ws: Worksheet,
+    summary_rows: list[SummaryRow],
+    coocc_rows: list[CoOccurrenceRow],
+    detailed_rows: list[DetailedSentimentRow],
+    brand_name: str,
+    date_range_str: str,
+) -> None:
+    n = _SC_N_COLS
+    r = 1
+
+    # R1: title bar
+    _merge_write(
+        ws, r, n,
+        f"Sentiment & Co-Occurrence — {brand_name} — {date_range_str}",
+        TITLE_FONT, TITLE_FILL, height=24,
+    )
+    r += 1
+
+    # R2: blank
+    r += 1
+
+    # --- Section 1: Sentiment Analysis Summary ---
+    _merge_write(ws, r, n, "Sentiment Analysis Summary", SECTION_FONT, SECTION_FILL, height=20)
+    r += 1
+    summary_headers = [h.replace("{brand}", brand_name) for h in _SC_SUMMARY_HEADERS_TPL]
+    _sc_write_headers(ws, r, summary_headers)
+    r += 1
+    for sr in summary_rows:
+        values = [
+            sr.category, sr.total_prompts, sr.brand_mentioned_count,
+            sr.mention_rate, sr.avg_sentiment_score,
+            sr.positive_count, sr.neutral_count, sr.negative_count,
+        ]
+        for col_idx, v in enumerate(values, start=1):
+            c = ws.cell(row=r, column=col_idx, value=v)
+            c.font = DATA_FONT
+            c.alignment = WRAP_TOP
+            c.border = THIN_GRAY
+        r += 1
+
+    r += 2  # 2 blank rows
+
+    # --- Section 2: Co-Occurrence Analysis ---
+    _merge_write(ws, r, n, "Co-Occurrence Analysis", SECTION_FONT, SECTION_FILL, height=20)
+    r += 1
+    coocc_headers = [h.replace("{brand}", brand_name) for h in _SC_COOCC_HEADERS]
+    _sc_write_headers(ws, r, coocc_headers)
+    r += 1
+    if not coocc_rows:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
+        msg = ws.cell(row=r, column=1, value="No co-occurrence data in the selected date range.")
+        msg.font = EMPTY_SECTION_FONT
+        r += 1
+    else:
+        for cr in coocc_rows:
+            values = [
+                cr.brand_or_entity, cr.cooccurrence_count, cr.relationship_type,
+                cr.typical_position, cr.key_associations, cr.opportunity_threat,
+            ]
+            for col_idx, v in enumerate(values, start=1):
+                c = ws.cell(row=r, column=col_idx, value=v)
+                c.font = DATA_FONT
+                c.alignment = WRAP_TOP
+                c.border = THIN_GRAY
+            r += 1
+
+    r += 2  # 2 blank rows
+
+    # --- Section 3: Detailed Sentiment by Prompt ---
+    _merge_write(ws, r, n, "Detailed Sentiment by Prompt", SECTION_FONT, SECTION_FILL, height=20)
+    r += 1
+    detail_headers = [h.replace("{brand}", brand_name) for h in _SC_DETAIL_HEADERS_TPL]
+    _sc_write_headers(ws, r, detail_headers)
+    r += 1
+    if not detailed_rows:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
+        msg = ws.cell(row=r, column=1, value="No detailed sentiment data in the selected date range.")
+        msg.font = EMPTY_SECTION_FONT
+        r += 1
+    else:
+        for dr in detailed_rows:
+            values = [
+                dr.prompt_id, dr.prompt, dr.category, dr.brand_mentioned,
+                dr.sentiment_score, dr.sentiment_label, dr.key_observations,
+            ]
+            for col_idx, v in enumerate(values, start=1):
+                c = ws.cell(row=r, column=col_idx, value=v)
+                c.font = DATA_FONT
+                c.alignment = WRAP_TOP
+                c.border = THIN_GRAY
+            r += 1
+
+    for col_idx, width in _SC_COL_WIDTHS.items():
+        ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
 
 def _build_source_attribution_sheet(

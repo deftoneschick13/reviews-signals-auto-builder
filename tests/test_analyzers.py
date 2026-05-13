@@ -2,6 +2,7 @@
 
 from src.analyzers.source_attribution import SourceRow, build_source_attribution
 from src.analyzers.ai_platform_response import build_ai_platform_response
+from src.analyzers.sentiment_cooccurrence import build_sentiment_cooccurrence
 from src.matchers import LabeledChat
 from src.peec_client import Chat
 from src.prompt_library import PromptEntry
@@ -367,3 +368,219 @@ def test_apr_no_row_emitted_for_prompts_without_chats():
     rows = result["ChatGPT"]["Direct Brand Queries"]
     assert len(rows) == 1
     assert rows[0].prompt_id == "DB-01"
+
+
+# ---------------------------------------------------------------------------
+# Sentiment & Co-Occurrence tests
+# ---------------------------------------------------------------------------
+
+def _sc_chat(
+    chat_id: str,
+    mentions: list[str] = None,
+    response: str = "",
+    sentiment=None,
+    model_channel: str = "ChatGPT",
+) -> Chat:
+    return Chat(
+        id=chat_id, model="chatgpt-scraper", model_channel=model_channel,
+        prompt="test prompt", response=response, country="US",
+        position=None, mentions=mentions or [], sources=[],
+        sentiment=sentiment, created="2026-05-01",
+    )
+
+
+def _sc_labeled(chat: Chat, prompt_id: str = "DB-01", category="Direct Brand Queries") -> LabeledChat:
+    return LabeledChat(chat=chat, prompt_id=prompt_id, category=category)  # type: ignore[arg-type]
+
+
+def _sc_library(**kwargs) -> dict:
+    lib = {}
+    for pid, (text, cat) in kwargs.items():
+        lib[pid] = PromptEntry(pid, text, cat, "", "")  # type: ignore[arg-type]
+    return lib
+
+
+def _sc(chats, brand=BRAND, library=None):
+    library = library or _sc_library(**{"DB-01": ("Test prompt", "Direct Brand Queries")})
+    return build_sentiment_cooccurrence(chats, library, brand)
+
+
+def test_sc_summary_mention_rate_format():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=[BRAND], sentiment=80.0)),
+        _sc_labeled(_sc_chat("ch_2", mentions=[BRAND], sentiment=70.0)),
+    ]
+    summary, _, _ = _sc(chats)
+    db_row = next(r for r in summary if r.category == "Direct Brand Queries")
+    assert db_row.mention_rate == "1/1 (100%)"
+
+
+def test_sc_summary_mention_rate_zero_total():
+    summary, _, _ = _sc([])
+    db_row = next(r for r in summary if r.category == "Direct Brand Queries")
+    assert db_row.mention_rate == "0/0 (—)"
+
+
+def test_sc_summary_avg_sentiment_aggregates_across_platforms():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=[BRAND], sentiment=80.0, model_channel="ChatGPT")),
+        _sc_labeled(_sc_chat("ch_2", mentions=[BRAND], sentiment=60.0, model_channel="Perplexity")),
+    ]
+    summary, _, _ = _sc(chats)
+    overall = next(r for r in summary if r.category == "OVERALL")
+    assert overall.avg_sentiment_score == "70.0"
+
+
+def test_sc_summary_avg_sentiment_excludes_chats_without_brand_mention():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=[BRAND], sentiment=80.0)),
+        _sc_labeled(_sc_chat("ch_2", mentions=[], sentiment=20.0)),  # excluded
+    ]
+    summary, _, _ = _sc(chats)
+    db_row = next(r for r in summary if r.category == "Direct Brand Queries")
+    assert db_row.avg_sentiment_score == "80.0"
+
+
+def test_sc_summary_overall_row_recomputes_from_scratch():
+    library = _sc_library(
+        **{
+            "DB-01": ("DB prompt", "Direct Brand Queries"),
+            "CB-01": ("CB prompt", "Category-Based Queries"),
+        }
+    )
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=[BRAND], sentiment=80.0), prompt_id="DB-01"),
+        _sc_labeled(_sc_chat("ch_2", mentions=[BRAND], sentiment=60.0), prompt_id="CB-01",
+                    category="Category-Based Queries"),
+    ]
+    summary, _, _ = build_sentiment_cooccurrence(chats, library, BRAND)
+    overall = next(r for r in summary if r.category == "OVERALL")
+    assert overall.total_prompts == 2
+    assert overall.brand_mentioned_count == 2
+    assert overall.avg_sentiment_score == "70.0"
+
+
+def test_sc_summary_positive_neutral_negative_counts_use_per_prompt_avg():
+    library = _sc_library(**{
+        "DB-01": ("P1", "Direct Brand Queries"),
+        "DB-02": ("P2", "Direct Brand Queries"),
+        "DB-03": ("P3", "Direct Brand Queries"),
+    })
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=[BRAND], sentiment=80.0), prompt_id="DB-01"),
+        _sc_labeled(_sc_chat("ch_2", mentions=[BRAND], sentiment=50.0), prompt_id="DB-02"),
+        _sc_labeled(_sc_chat("ch_3", mentions=[BRAND], sentiment=30.0), prompt_id="DB-03"),
+    ]
+    summary, _, _ = build_sentiment_cooccurrence(chats, library, BRAND)
+    db_row = next(r for r in summary if r.category == "Direct Brand Queries")
+    assert db_row.positive_count == 1
+    assert db_row.neutral_count == 1
+    assert db_row.negative_count == 1
+
+
+def test_sc_summary_prompts_without_qualifying_chats_dont_count():
+    chats = [_sc_labeled(_sc_chat("ch_1", mentions=[], sentiment=80.0))]
+    summary, _, _ = _sc(chats)
+    db_row = next(r for r in summary if r.category == "Direct Brand Queries")
+    assert db_row.positive_count == 0
+    assert db_row.neutral_count == 0
+    assert db_row.negative_count == 0
+
+
+def test_sc_cooccurrence_excludes_brand_and_variants():
+    chats = [_sc_labeled(_sc_chat("ch_1", mentions=[BRAND, "babylon", "Competitor A"]))]
+    _, coocc, _ = _sc(chats)
+    entities = [r.brand_or_entity for r in coocc]
+    assert "babylon" not in entities
+    assert BRAND not in entities
+    assert "Competitor A" in entities
+
+
+def test_sc_cooccurrence_counts_once_per_chat_not_per_mention_occurrence():
+    # "Competitor A" appears in two chats — count should be 2
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=["Competitor A", "Competitor A"])),
+        _sc_labeled(_sc_chat("ch_2", mentions=["Competitor A"])),
+    ]
+    _, coocc, _ = _sc(chats)
+    row = next(r for r in coocc if r.brand_or_entity == "Competitor A")
+    assert row.cooccurrence_count == 2
+
+
+def test_sc_cooccurrence_sorted_by_count_then_name():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=["Alpha", "Beta", "Gamma"])),
+        _sc_labeled(_sc_chat("ch_2", mentions=["Beta", "Gamma"])),
+        _sc_labeled(_sc_chat("ch_3", mentions=["Gamma"])),
+    ]
+    _, coocc, _ = _sc(chats)
+    assert coocc[0].brand_or_entity == "Gamma"
+    assert coocc[1].brand_or_entity == "Beta"
+    assert coocc[2].brand_or_entity == "Alpha"
+
+
+def test_sc_cooccurrence_capped_at_max():
+    from src.config import MAX_COOCCURRENCE_ROWS
+    mentions = [f"Brand{i}" for i in range(MAX_COOCCURRENCE_ROWS + 5)]
+    chats = [_sc_labeled(_sc_chat("ch_1", mentions=mentions))]
+    _, coocc, _ = _sc(chats)
+    assert len(coocc) == MAX_COOCCURRENCE_ROWS
+
+
+def test_sc_detailed_one_row_per_prompt_id_across_platforms():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", model_channel="ChatGPT")),
+        _sc_labeled(_sc_chat("ch_2", model_channel="Perplexity")),
+    ]
+    _, _, detailed = _sc(chats)
+    assert len(detailed) == 1
+    assert detailed[0].prompt_id == "DB-01"
+
+
+def test_sc_detailed_sorted_by_category_then_numeric_prompt_id():
+    library = _sc_library(**{
+        "DB-2": ("DB-2", "Direct Brand Queries"),
+        "DB-10": ("DB-10", "Direct Brand Queries"),
+        "CB-01": ("CB-01", "Category-Based Queries"),
+    })
+    chats = [
+        _sc_labeled(_sc_chat("ch_1"), prompt_id="DB-10"),
+        _sc_labeled(_sc_chat("ch_2"), prompt_id="CB-01", category="Category-Based Queries"),
+        _sc_labeled(_sc_chat("ch_3"), prompt_id="DB-2"),
+    ]
+    _, _, detailed = build_sentiment_cooccurrence(chats, library, BRAND)
+    ids = [r.prompt_id for r in detailed]
+    assert ids == ["DB-2", "DB-10", "CB-01"]
+
+
+def test_sc_detailed_brand_mentioned_format_Yes_or_No():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=[BRAND])),
+        _sc_labeled(_sc_chat("ch_2", mentions=[])),
+    ]
+    _, _, detailed = _sc(chats)
+    assert detailed[0].brand_mentioned == "Yes (1/2)"
+
+    chats2 = [_sc_labeled(_sc_chat("ch_1", mentions=[]))]
+    _, _, detailed2 = _sc(chats2)
+    assert detailed2[0].brand_mentioned == "No (0/1)"
+
+
+def test_sc_detailed_sentiment_label_with_no_data():
+    chats = [_sc_labeled(_sc_chat("ch_1", mentions=[], sentiment=None))]
+    _, _, detailed = _sc(chats)
+    assert detailed[0].sentiment_label == "No Sentiment"
+    assert detailed[0].sentiment_score == "-"
+
+
+def test_sc_judgment_fields_always_empty():
+    chats = [
+        _sc_labeled(_sc_chat("ch_1", mentions=["Competitor"])),
+        _sc_labeled(_sc_chat("ch_2", mentions=[BRAND], sentiment=70.0)),
+    ]
+    _, coocc, detailed = _sc(chats)
+    assert coocc[0].relationship_type == ""
+    assert coocc[0].typical_position == ""
+    assert coocc[0].key_associations == ""
+    assert coocc[0].opportunity_threat == ""
+    assert detailed[0].key_observations == ""
