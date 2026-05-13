@@ -1,8 +1,10 @@
-"""Tests for src/analyzers/source_attribution.py."""
+"""Tests for src/analyzers/source_attribution.py and ai_platform_response.py."""
 
 from src.analyzers.source_attribution import SourceRow, build_source_attribution
+from src.analyzers.ai_platform_response import build_ai_platform_response
 from src.matchers import LabeledChat
 from src.peec_client import Chat
+from src.prompt_library import PromptEntry
 
 
 def _chat(chat_id: str, sources: list[str], model_channel: str = "ChatGPT") -> Chat:
@@ -105,3 +107,263 @@ def test_source_attribution_skips_empty_string_urls_in_sources_list():
     rows = build_source_attribution(chats)
     assert len(rows) == 1
     assert rows[0].source_url == "https://real.com"
+
+
+# ---------------------------------------------------------------------------
+# AI Platform Response Tracking tests
+# ---------------------------------------------------------------------------
+
+BRAND = "Babylon Tours"
+
+
+def _apr_chat(
+    chat_id: str,
+    mentions: list[str] = None,
+    response: str = "",
+    position=None,
+    sentiment=None,
+    sources: list[str] = None,
+    model_channel: str = "ChatGPT",
+) -> Chat:
+    return Chat(
+        id=chat_id,
+        model="chatgpt-scraper",
+        model_channel=model_channel,
+        prompt="test prompt",
+        response=response,
+        country="US",
+        position=position,
+        mentions=mentions or [],
+        sources=sources or [],
+        sentiment=sentiment,
+        created="2026-05-01",
+    )
+
+
+def _apr_labeled(chat: Chat, prompt_id: str = "DB-01", category="Direct Brand Queries") -> LabeledChat:
+    return LabeledChat(chat=chat, prompt_id=prompt_id, category=category)  # type: ignore[arg-type]
+
+
+def _apr_library(prompt_id: str = "DB-01", text: str = "Test prompt", category="Direct Brand Queries") -> dict:
+    return {prompt_id: PromptEntry(prompt_id=prompt_id, text=text, category=category, intent="", priority="")}  # type: ignore[arg-type]
+
+
+def _get_rows(chats, brand=BRAND, library=None, category="Direct Brand Queries"):
+    library = library or _apr_library()
+    result = build_ai_platform_response(chats, library, brand)
+    return result.get("ChatGPT", {}).get(category, [])
+
+
+def test_apr_single_chat_brand_mentioned_returns_Y():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[BRAND]))]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "Y"
+
+
+def test_apr_single_chat_brand_not_mentioned_returns_N():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=["Other Brand"]))]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "N"
+
+
+def test_apr_multi_chat_partial_mention_returns_Y_with_count():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", mentions=[BRAND])),
+        _apr_labeled(_apr_chat("ch_2", mentions=["Other"])),
+        _apr_labeled(_apr_chat("ch_3", mentions=[BRAND])),
+    ]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "Y (2/3)"
+
+
+def test_apr_multi_chat_zero_mentions_returns_N_with_zero():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", mentions=["Other"])),
+        _apr_labeled(_apr_chat("ch_2", mentions=["Other"])),
+    ]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "N (0/2)"
+
+
+def test_apr_brand_match_via_mentions_list():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=["Babylon Tours Official"]))]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "Y"
+
+
+def test_apr_brand_match_via_response_text_when_not_in_mentions():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[], response="Babylon Tours is a great company"))]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "Y"
+
+
+def test_apr_brand_match_is_case_insensitive():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=["babylon tours"]))]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "Y"
+
+
+def test_apr_position_average_only_includes_chats_with_brand_mentioned():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", mentions=[BRAND], position=2)),
+        _apr_labeled(_apr_chat("ch_2", mentions=[BRAND], position=4)),
+        _apr_labeled(_apr_chat("ch_3", mentions=[], position=1)),   # not mentioned — excluded
+    ]
+    rows = _get_rows(chats)
+    assert rows[0].position == "3.0"
+
+
+def test_apr_position_returns_dash_when_no_qualifying_chats():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[], position=1))]
+    rows = _get_rows(chats)
+    assert rows[0].position == "-"
+
+
+def test_apr_sentiment_average_only_includes_chats_with_brand_mentioned():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", mentions=[BRAND], sentiment=80.0)),
+        _apr_labeled(_apr_chat("ch_2", mentions=[BRAND], sentiment=70.0)),
+        _apr_labeled(_apr_chat("ch_3", mentions=[], sentiment=10.0)),  # excluded
+    ]
+    rows = _get_rows(chats)
+    assert rows[0].sentiment_score == "75.0"
+
+
+def test_apr_sentiment_label_positive_neutral_negative_no_sentiment():
+    def _rows_with_sent(sent):
+        chats = [_apr_labeled(_apr_chat("ch_1", mentions=[BRAND], sentiment=sent))]
+        return _get_rows(chats)
+
+    assert _rows_with_sent(80.0)[0].sentiment_label == "Positive"   # >= 60
+    assert _rows_with_sent(50.0)[0].sentiment_label == "Neutral"    # 40 < x < 60
+    assert _rows_with_sent(30.0)[0].sentiment_label == "Negative"   # <= 40
+
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[]))]
+    assert _get_rows(chats)[0].sentiment_label == "No Sentiment"
+
+
+def test_apr_co_mentions_excludes_brand_name_and_variants():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[BRAND, "babylon", "Competitor A"]))]
+    rows = _get_rows(chats)
+    co = rows[0].co_mentions
+    assert "Babylon" not in co
+    assert "babylon" not in co
+    assert "Competitor A" in co
+
+
+def test_apr_co_mentions_sorted_by_count_then_name():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", mentions=["Alpha", "Beta", "Gamma"])),
+        _apr_labeled(_apr_chat("ch_2", mentions=["Beta", "Gamma"])),
+        _apr_labeled(_apr_chat("ch_3", mentions=["Gamma"])),
+    ]
+    rows = _get_rows(chats)
+    # Gamma: 3, Beta: 2, Alpha: 1
+    assert rows[0].co_mentions.startswith("Gamma (3/3), Beta (2/3), Alpha (1/3)")
+
+
+def test_apr_co_mentions_caps_at_5():
+    mentions = [f"Brand{i}" for i in range(8)]
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=mentions))]
+    rows = _get_rows(chats)
+    # Should have at most 5 entries
+    assert rows[0].co_mentions.count(",") <= 4
+
+
+def test_apr_co_mentions_returns_None_when_empty():
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[]))]
+    rows = _get_rows(chats)
+    assert rows[0].co_mentions == "None"
+
+
+def test_apr_sources_dedupes_and_caps_at_max():
+    from src.config import MAX_SOURCES_PER_GROUP
+    # 15 unique URLs across chats — should cap at MAX_SOURCES_PER_GROUP (10)
+    chats = [
+        _apr_labeled(_apr_chat(f"ch_{i}", sources=[f"https://url{i}.com"]))
+        for i in range(15)
+    ]
+    rows = _get_rows(chats)
+    assert rows[0].sources_citations.count("\n") == MAX_SOURCES_PER_GROUP - 1
+
+
+def test_apr_sources_returns_dash_when_empty():
+    chats = [_apr_labeled(_apr_chat("ch_1", sources=[]))]
+    rows = _get_rows(chats)
+    assert rows[0].sources_citations == "-"
+
+
+def test_apr_chat_snapshot_picks_first_brand_mentioning_chat():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", response="No mention here")),
+        _apr_labeled(_apr_chat("ch_2", mentions=[BRAND], response="Babylon Tours is great")),
+    ]
+    rows = _get_rows(chats)
+    assert "Babylon Tours is great" in rows[0].chat_snapshot
+
+
+def test_apr_chat_snapshot_falls_back_to_first_chat():
+    chats = [_apr_labeled(_apr_chat("ch_1", response="Fallback response"))]
+    rows = _get_rows(chats)
+    assert "Fallback response" in rows[0].chat_snapshot
+
+
+def test_apr_chat_snapshot_truncates_with_ellipsis():
+    from src.config import CHAT_SNAPSHOT_CHARS
+    long_response = "x" * (CHAT_SNAPSHOT_CHARS + 50)
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[BRAND], response=long_response))]
+    rows = _get_rows(chats)
+    assert rows[0].chat_snapshot.endswith("...")
+    assert len(rows[0].chat_snapshot) == CHAT_SNAPSHOT_CHARS + 3
+
+
+def test_apr_excludes_non_chatgpt_platforms():
+    chats = [
+        _apr_labeled(_apr_chat("ch_1", model_channel="Perplexity")),
+        _apr_labeled(_apr_chat("ch_2", model_channel="Google AI Overview")),
+    ]
+    result = build_ai_platform_response(chats, _apr_library(), BRAND)
+    assert "ChatGPT" not in result
+    assert "Perplexity" not in result
+
+
+def test_apr_categories_always_DB_CB_CO_order():
+    chats = [_apr_labeled(_apr_chat("ch_1"))]
+    result = build_ai_platform_response(chats, _apr_library(), BRAND)
+    categories = list(result.get("ChatGPT", {}).keys())
+    assert categories == ["Direct Brand Queries", "Category-Based Queries", "Comparison Queries"]
+
+
+def test_apr_rows_sorted_by_prompt_id_numerically():
+    library = {
+        "DB-2": PromptEntry("DB-2", "Prompt 2", "Direct Brand Queries", "", ""),
+        "DB-10": PromptEntry("DB-10", "Prompt 10", "Direct Brand Queries", "", ""),
+    }
+    chats = [
+        _apr_labeled(_apr_chat("ch_1"), prompt_id="DB-10"),
+        _apr_labeled(_apr_chat("ch_2"), prompt_id="DB-2"),
+    ]
+    result = build_ai_platform_response(chats, library, BRAND)
+    rows = result["ChatGPT"]["Direct Brand Queries"]
+    assert rows[0].prompt_id == "DB-2"
+    assert rows[1].prompt_id == "DB-10"
+
+
+def test_apr_context_analysis_and_notes_always_empty():
+    chats = [_apr_labeled(_apr_chat("ch_1"))]
+    rows = _get_rows(chats)
+    assert rows[0].context_analysis == ""
+    assert rows[0].notes == ""
+
+
+def test_apr_no_row_emitted_for_prompts_without_chats():
+    # prompt_library has DB-01 and DB-02, but only DB-01 has chats
+    library = {
+        "DB-01": PromptEntry("DB-01", "Prompt 1", "Direct Brand Queries", "", ""),
+        "DB-02": PromptEntry("DB-02", "Prompt 2", "Direct Brand Queries", "", ""),
+    }
+    chats = [_apr_labeled(_apr_chat("ch_1"), prompt_id="DB-01")]
+    result = build_ai_platform_response(chats, library, BRAND)
+    rows = result["ChatGPT"]["Direct Brand Queries"]
+    assert len(rows) == 1
+    assert rows[0].prompt_id == "DB-01"

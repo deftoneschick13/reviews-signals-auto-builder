@@ -93,7 +93,7 @@ def test_source_attribution_tab_freeze_panes_at_A4(built_wb):
 
 
 def test_stub_tabs_have_only_title_and_placeholder(built_wb):
-    for name in SHEET_NAMES[1:]:  # skip source attribution
+    for name in SHEET_NAMES[2:]:  # skip source attribution and APR (real sheets)
         ws = built_wb[name]
         assert name in ws["A1"].value
         assert ws["A2"].value == "(populated in a later step)"
@@ -106,6 +106,64 @@ def test_build_workbook_with_empty_chats_produces_valid_file(tmp_path):
     build_workbook([], {}, BRAND, DATE_RANGE, path)
     wb = openpyxl.load_workbook(path)
     assert wb.sheetnames == SHEET_NAMES
-    # Source attribution tab should show the "no data" message
     ws = wb["Source Attribution Tracking"]
     assert ws.cell(row=4, column=1).value == "No source data in the selected date range."
+
+
+# ---------------------------------------------------------------------------
+# AI Platform Response Tracking workbook tests
+# ---------------------------------------------------------------------------
+
+def _apr_chat_with_brand(chat_id: str) -> "LabeledChat":
+    from src.peec_client import Chat
+    from src.matchers import LabeledChat
+    chat = Chat(
+        id=chat_id, model="chatgpt-scraper", model_channel="ChatGPT",
+        prompt="Test prompt", response="Babylon Tours is great",
+        country="US", position=1, mentions=["Babylon Tours"],
+        sources=["https://example.com"], sentiment=75.0, created="2026-05-01",
+    )
+    return LabeledChat(chat=chat, prompt_id="DB-01", category="Direct Brand Queries")
+
+
+@pytest.fixture
+def apr_wb(tmp_path):
+    from src.prompt_library import PromptEntry
+    library = {"DB-01": PromptEntry("DB-01", "Test prompt", "Direct Brand Queries", "", "")}
+    chats = [_apr_chat_with_brand("ch_1")]
+    path = build_workbook(chats, library, BRAND, DATE_RANGE, tmp_path / "apr.xlsx")
+    return openpyxl.load_workbook(path)
+
+
+def test_apr_tab_has_title_bar(apr_wb):
+    ws = apr_wb["AI Platform Response Tracking"]
+    assert "AI Platform Response Tracking" in ws["A1"].value
+    assert BRAND in ws["A1"].value
+
+
+def test_apr_tab_has_platform_section_for_chatgpt(apr_wb):
+    ws = apr_wb["AI Platform Response Tracking"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 30)]
+    assert any(v and "Platform: ChatGPT" in str(v) for v in all_values)
+
+
+def test_apr_tab_has_three_category_subsections_per_platform(apr_wb):
+    ws = apr_wb["AI Platform Response Tracking"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 50)]
+    cats = ["Direct Brand Queries", "Category-Based Queries", "Comparison Queries"]
+    for cat in cats:
+        assert any(v and cat in str(v) for v in all_values), f"Missing category: {cat}"
+
+
+def test_apr_tab_writes_empty_placeholder_for_categories_with_no_data(apr_wb):
+    ws = apr_wb["AI Platform Response Tracking"]
+    all_values = [ws.cell(row=r, column=1).value for r in range(1, 60)]
+    assert any(
+        v and "No data for this category" in str(v)
+        for v in all_values
+    )
+
+
+def test_apr_tab_freeze_panes_at_A3(apr_wb):
+    ws = apr_wb["AI Platform Response Tracking"]
+    assert str(ws.freeze_panes) == "A3"

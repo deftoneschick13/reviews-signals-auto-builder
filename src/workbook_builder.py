@@ -5,6 +5,11 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
+from src.analyzers.ai_platform_response import (
+    CATEGORIES_ORDERED,
+    PlatformResponseRow,
+    build_ai_platform_response,
+)
 from src.analyzers.source_attribution import SourceRow, build_source_attribution
 from src.matchers import LabeledChat
 from src.prompt_library import PromptEntry
@@ -21,6 +26,17 @@ from src.styles import (
     WRAP_TOP,
 )
 
+_APR_HEADERS = [
+    "Prompt ID", "Prompt", "Brand Mentioned?", "Position",
+    "Context Analysis", "Sentiment Score", "Sentiment",
+    "Co-Mentions", "Sources/Citations", "Chat Snapshot", "Notes",
+]
+_APR_COL_WIDTHS = {
+    1: 10, 2: 40, 3: 18, 4: 10, 5: 35, 6: 14,
+    7: 12, 8: 35, 9: 50, 10: 50, 11: 25,
+}
+_APR_COLS = len(_APR_HEADERS)
+
 
 def build_workbook(
     chats: list[LabeledChat],
@@ -29,11 +45,7 @@ def build_workbook(
     date_range_str: str,
     output_path: Path | str,
 ) -> Path:
-    """Create the output workbook at output_path. Returns the path.
-
-    In Step 5, only 'Source Attribution Tracking' is fully populated.
-    The other three tabs are created as stubs to be filled in Steps 6-8.
-    """
+    """Create the output workbook at output_path. Returns the path."""
     wb = Workbook()
     wb.remove(wb.active)
 
@@ -41,8 +53,9 @@ def build_workbook(
     sa_ws = wb.create_sheet("Source Attribution Tracking")
     _build_source_attribution_sheet(sa_ws, sa_rows, brand_name, date_range_str)
 
+    apr_data = build_ai_platform_response(chats, prompt_library, brand_name)
     apr_ws = wb.create_sheet("AI Platform Response Tracking")
-    _build_stub(apr_ws, "AI Platform Response Tracking", brand_name, date_range_str)
+    _build_ai_platform_response_sheet(apr_ws, apr_data, brand_name, date_range_str)
 
     sc_ws = wb.create_sheet("Sentiment & Co-Occurrence")
     _build_stub(sc_ws, "Sentiment & Co-Occurrence", brand_name, date_range_str)
@@ -56,8 +69,19 @@ def build_workbook(
     return output_path
 
 
+def _merge_write(ws: Worksheet, row: int, n_cols: int, value, font, fill=None, height=None):
+    end_col_letter = chr(ord("A") + n_cols - 1)
+    ws.merge_cells(f"A{row}:{end_col_letter}{row}")
+    c = ws[f"A{row}"]
+    c.value = value
+    c.font = font
+    if fill:
+        c.fill = fill
+    if height:
+        ws.row_dimensions[row].height = height
+
+
 def _build_stub(ws: Worksheet, title: str, brand_name: str, date_range_str: str) -> None:
-    """Title bar only — used for tabs not yet implemented."""
     ws.merge_cells("A1:F1")
     cell = ws["A1"]
     cell.value = f"{title} — {brand_name} — {date_range_str}"
@@ -68,19 +92,91 @@ def _build_stub(ws: Worksheet, title: str, brand_name: str, date_range_str: str)
     ws["A2"].font = EMPTY_SECTION_FONT
 
 
+def _build_ai_platform_response_sheet(
+    ws: Worksheet,
+    data: dict,
+    brand_name: str,
+    date_range_str: str,
+) -> None:
+    n = _APR_COLS
+    current_row = 1
+
+    # R1: title bar
+    _merge_write(
+        ws, current_row, n,
+        f"AI Platform Response Tracking — {brand_name} — {date_range_str}",
+        TITLE_FONT, TITLE_FILL, height=24,
+    )
+    current_row += 1
+
+    # R2: blank
+    current_row += 1
+
+    for platform in sorted(data.keys()):
+        # Platform section header
+        _merge_write(ws, current_row, n, f"Platform: {platform}", SECTION_FONT, SECTION_FILL, height=20)
+        current_row += 1
+
+        for category in CATEGORIES_ORDERED:
+            # Sub-section header
+            _merge_write(
+                ws, current_row, n,
+                f"Platform: {platform} | {category}",
+                SECTION_FONT, SECTION_FILL, height=20,
+            )
+            current_row += 1
+
+            # Column headers
+            for col_idx, header in enumerate(_APR_HEADERS, start=1):
+                c = ws.cell(row=current_row, column=col_idx, value=header)
+                c.font = HEADER_FONT
+                c.fill = HEADER_FILL
+                c.alignment = WRAP_TOP
+            current_row += 1
+
+            rows: list[PlatformResponseRow] = data[platform].get(category, [])
+            if not rows:
+                end_col_letter = chr(ord("A") + n - 1)
+                ws.merge_cells(
+                    start_row=current_row, start_column=1,
+                    end_row=current_row, end_column=n,
+                )
+                msg = ws.cell(
+                    row=current_row, column=1,
+                    value="No data for this category in the selected date range.",
+                )
+                msg.font = EMPTY_SECTION_FONT
+                current_row += 1
+            else:
+                for pr in rows:
+                    values = [
+                        pr.prompt_id, pr.prompt, pr.brand_mentioned, pr.position,
+                        pr.context_analysis, pr.sentiment_score, pr.sentiment_label,
+                        pr.co_mentions, pr.sources_citations, pr.chat_snapshot, pr.notes,
+                    ]
+                    for col_idx, v in enumerate(values, start=1):
+                        c = ws.cell(row=current_row, column=col_idx, value=v)
+                        c.font = DATA_FONT
+                        c.alignment = WRAP_TOP
+                        c.border = THIN_GRAY
+                    current_row += 1
+
+            # Blank row separator
+            current_row += 1
+
+    # Column widths
+    for col_idx, width in _APR_COL_WIDTHS.items():
+        ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
+
+    ws.freeze_panes = "A3"
+
+
 def _build_source_attribution_sheet(
     ws: Worksheet,
     rows: list[SourceRow],
     brand_name: str,
     date_range_str: str,
 ) -> None:
-    """Layout:
-    R1: title bar (merged A:F)
-    R2: subsection 'Client Sources' (merged A:F)
-    R3: column headers
-    R4+: data rows
-    """
-    # Title row
     ws.merge_cells("A1:F1")
     title_cell = ws["A1"]
     title_cell.value = f"Source Attribution Tracking — {brand_name} — {date_range_str}"
@@ -88,7 +184,6 @@ def _build_source_attribution_sheet(
     title_cell.fill = TITLE_FILL
     ws.row_dimensions[1].height = 24
 
-    # Subsection row
     ws.merge_cells("A2:F2")
     sub_cell = ws["A2"]
     sub_cell.value = "Client Sources"
@@ -96,7 +191,6 @@ def _build_source_attribution_sheet(
     sub_cell.fill = SECTION_FILL
     ws.row_dimensions[2].height = 20
 
-    # Column headers
     headers = [
         "Domain", "Source URL", "Content Type", "Topic",
         "Platform Citations", "Citation Count",
@@ -107,7 +201,6 @@ def _build_source_attribution_sheet(
         c.fill = HEADER_FILL
         c.alignment = WRAP_TOP
 
-    # Data rows
     if not rows:
         msg = ws.cell(row=4, column=1, value="No source data in the selected date range.")
         msg.font = EMPTY_SECTION_FONT
@@ -124,10 +217,8 @@ def _build_source_attribution_sheet(
                 c.alignment = WRAP_TOP
                 c.border = THIN_GRAY
 
-    # Column widths
     widths = {1: 25, 2: 60, 3: 25, 4: 30, 5: 30, 6: 15}
     for col_idx, width in widths.items():
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
-    # Freeze top 3 rows
     ws.freeze_panes = "A4"
