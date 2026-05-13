@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.styles import Alignment
 from openpyxl.worksheet.worksheet import Worksheet
 
 from src.analyzers.ai_platform_response import (
@@ -22,14 +23,21 @@ from src.matchers import LabeledChat
 from src.prompt_library import PromptEntry
 from src.styles import (
     DATA_FONT,
+    DATA_FONT_BOLD,
     EMPTY_SECTION_FONT,
+    HEADER_ALIGN,
     HEADER_FILL,
+    HEADER_FILL_SA,
     HEADER_FONT,
-    SECTION_FILL,
     SECTION_FONT,
+    SECTION_FONT_APR,
+    SECTION_FONT_BM,
+    SECTION_FONT_SA_SUB,
     THIN_GRAY,
-    TITLE_FILL,
     TITLE_FONT,
+    TITLE_FONT_APR,
+    TITLE_FONT_BM,
+    TITLE_FONT_SC,
     WRAP_TOP,
 )
 
@@ -38,11 +46,14 @@ _APR_HEADERS = [
     "Context Analysis", "Sentiment Score", "Sentiment",
     "Co-Mentions", "Sources/Citations", "Chat Snapshot", "Notes",
 ]
+# Reference column widths (matched from Babylon Tours reference workbook)
 _APR_COL_WIDTHS = {
-    1: 10, 2: 40, 3: 18, 4: 10, 5: 35, 6: 14,
-    7: 12, 8: 35, 9: 50, 10: 50, 11: 25,
+    1: 18.63, 2: 45.0, 3: 14.0, 4: 10.0, 5: 70.0, 6: 14.0,
+    7: 14.0, 8: 35.0, 9: 50.0, 10: 60.0, 11: 50.0,
 }
 _APR_COLS = len(_APR_HEADERS)
+
+_APR_DATA_ROW_HEIGHT = 112.5
 
 
 def build_workbook(
@@ -78,7 +89,16 @@ def build_workbook(
     return output_path
 
 
-def _merge_write(ws: Worksheet, row: int, n_cols: int, value, font, fill=None, height=None):
+def _merge_write(
+    ws: Worksheet,
+    row: int,
+    n_cols: int,
+    value,
+    font,
+    fill=None,
+    height=None,
+    alignment: Alignment | None = None,
+) -> None:
     end_col_letter = chr(ord("A") + n_cols - 1)
     ws.merge_cells(f"A{row}:{end_col_letter}{row}")
     c = ws[f"A{row}"]
@@ -88,17 +108,69 @@ def _merge_write(ws: Worksheet, row: int, n_cols: int, value, font, fill=None, h
         c.fill = fill
     if height:
         ws.row_dimensions[row].height = height
+    if alignment:
+        c.alignment = alignment
 
 
-def _build_stub(ws: Worksheet, title: str, brand_name: str, date_range_str: str) -> None:
+def _write_header_row(ws: Worksheet, row: int, headers: list[str]) -> None:
+    for col_idx, h in enumerate(headers, start=1):
+        c = ws.cell(row=row, column=col_idx, value=h)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL
+        c.alignment = HEADER_ALIGN
+
+
+def _build_source_attribution_sheet(
+    ws: Worksheet,
+    rows: list[SourceRow],
+    brand_name: str,
+    date_range_str: str,
+) -> None:
+    # R1: title (no fill, dark navy text, centered)
     ws.merge_cells("A1:F1")
-    cell = ws["A1"]
-    cell.value = f"{title} — {brand_name} — {date_range_str}"
-    cell.font = TITLE_FONT
-    cell.fill = TITLE_FILL
-    ws.row_dimensions[1].height = 24
-    ws["A2"] = "(populated in a later step)"
-    ws["A2"].font = EMPTY_SECTION_FONT
+    title_cell = ws["A1"]
+    title_cell.value = f"Source Attribution Tracking — {brand_name} — {date_range_str}"
+    title_cell.font = TITLE_FONT
+    title_cell.alignment = Alignment(horizontal="center")
+
+    # R2: "Client Sources" section (no fill, dark navy, size 14)
+    ws.merge_cells("A2:F2")
+    sub_cell = ws["A2"]
+    sub_cell.value = "Client Sources"
+    sub_cell.font = SECTION_FONT_SA_SUB
+
+    # R3: column headers (SA pink fill, white text, centered)
+    headers = [
+        "Domain", "Source URL", "Content Type", "Topic",
+        "Platform Citations", "Citation Count",
+    ]
+    for col_idx, header in enumerate(headers, start=1):
+        c = ws.cell(row=3, column=col_idx, value=header)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL_SA
+        c.alignment = HEADER_ALIGN
+
+    # R4+: data
+    if not rows:
+        msg = ws.cell(row=4, column=1, value="No source data in the selected date range.")
+        msg.font = EMPTY_SECTION_FONT
+        ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=6)
+    else:
+        for row_idx, sr in enumerate(rows, start=4):
+            values = [
+                sr.domain, sr.source_url, sr.content_type,
+                sr.topic, sr.platform_citations, sr.citation_count,
+            ]
+            for col_idx, v in enumerate(values, start=1):
+                c = ws.cell(row=row_idx, column=col_idx, value=v)
+                c.font = DATA_FONT
+                c.alignment = WRAP_TOP
+                c.border = THIN_GRAY
+
+    # Column widths matched to reference
+    widths = {1: 48.5, 2: 70.0, 3: 61.63, 4: 55.0, 5: 20.63, 6: 16.0}
+    for col_idx, width in widths.items():
+        ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
 
 def _build_ai_platform_response_sheet(
@@ -110,11 +182,12 @@ def _build_ai_platform_response_sheet(
     n = _APR_COLS
     current_row = 1
 
-    # R1: title bar
+    # R1: title bar (pink text, no fill, centered)
     _merge_write(
         ws, current_row, n,
         f"AI Platform Response Tracking — {brand_name} — {date_range_str}",
-        TITLE_FONT, TITLE_FILL, height=24,
+        TITLE_FONT_APR,
+        alignment=Alignment(horizontal="center"),
     )
     current_row += 1
 
@@ -122,30 +195,25 @@ def _build_ai_platform_response_sheet(
     current_row += 1
 
     for platform in sorted(data.keys()):
-        # Platform section header
-        _merge_write(ws, current_row, n, f"Platform: {platform}", SECTION_FONT, SECTION_FILL, height=20)
+        # Platform section header (pink text, no fill)
+        _merge_write(ws, current_row, n, f"Platform: {platform}", SECTION_FONT_APR)
         current_row += 1
 
         for category in CATEGORIES_ORDERED:
-            # Sub-section header
+            # Category sub-section header (pink text, no fill)
             _merge_write(
                 ws, current_row, n,
                 f"Platform: {platform} | {category}",
-                SECTION_FONT, SECTION_FILL, height=20,
+                SECTION_FONT_APR,
             )
             current_row += 1
 
-            # Column headers
-            for col_idx, header in enumerate(_APR_HEADERS, start=1):
-                c = ws.cell(row=current_row, column=col_idx, value=header)
-                c.font = HEADER_FONT
-                c.fill = HEADER_FILL
-                c.alignment = WRAP_TOP
+            # Column headers (pink fill, white text, centered)
+            _write_header_row(ws, current_row, _APR_HEADERS)
             current_row += 1
 
             rows: list[PlatformResponseRow] = data[platform].get(category, [])
             if not rows:
-                end_col_letter = chr(ord("A") + n - 1)
                 ws.merge_cells(
                     start_row=current_row, start_column=1,
                     end_row=current_row, end_column=n,
@@ -168,12 +236,13 @@ def _build_ai_platform_response_sheet(
                         c.font = DATA_FONT
                         c.alignment = WRAP_TOP
                         c.border = THIN_GRAY
+                    ws.row_dimensions[current_row].height = _APR_DATA_ROW_HEIGHT
                     current_row += 1
 
             # Blank row separator
             current_row += 1
 
-    # Column widths
+    # Column widths matched to reference
     for col_idx, width in _APR_COL_WIDTHS.items():
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
@@ -181,7 +250,8 @@ def _build_ai_platform_response_sheet(
 
 
 _BM_N_COLS = 5
-_BM_COL_WIDTHS = {1: 30, 2: 20, 3: 15, 4: 15, 5: 40}
+# Column widths matched to reference
+_BM_COL_WIDTHS = {1: 18.0, 2: 19.75, 3: 10.5, 4: 18.38, 5: 105.75}
 _BM_HEADERS = ["Brand", "Mention Rate", "Avg. Position", "Avg. Sentiment", "Dominant Themes"]
 
 
@@ -194,24 +264,24 @@ def _build_benchmarking_sheet(
     n = _BM_N_COLS
     r = 1
 
+    # R1: title (deep blue text, no fill, centered)
     _merge_write(
         ws, r, n,
         f"Benchmarking — {brand_name} — {date_range_str}",
-        TITLE_FONT, TITLE_FILL, height=24,
+        TITLE_FONT_BM,
+        alignment=Alignment(horizontal="center"),
     )
     r += 1
 
     r += 1  # blank
 
     for category in CATEGORIES_ORDERED:
-        _merge_write(ws, r, n, category, SECTION_FONT, SECTION_FILL, height=20)
+        # Section header (deep blue text, no fill)
+        _merge_write(ws, r, n, category, SECTION_FONT_BM)
         r += 1
 
-        for col_idx, h in enumerate(_BM_HEADERS, start=1):
-            c = ws.cell(row=r, column=col_idx, value=h)
-            c.font = HEADER_FONT
-            c.fill = HEADER_FILL
-            c.alignment = WRAP_TOP
+        # Column headers (pink fill, white text, centered)
+        _write_header_row(ws, r, _BM_HEADERS)
         r += 1
 
         rows: list[BenchmarkRow] = data.get(category, [])
@@ -222,15 +292,9 @@ def _build_benchmarking_sheet(
                 c.font = DATA_FONT
                 c.alignment = WRAP_TOP
                 c.border = THIN_GRAY
-            # Bold the focal brand name (first row per section)
+            # Focal brand (first row per section) bolded
             if i == 0:
-                from openpyxl.styles import Font
-                cell = ws.cell(row=r, column=1)
-                cell.font = Font(
-                    name=DATA_FONT.name,
-                    size=DATA_FONT.size,
-                    bold=True,
-                )
+                ws.cell(row=r, column=1).font = DATA_FONT_BOLD
             r += 1
 
         r += 1  # blank separator
@@ -240,7 +304,8 @@ def _build_benchmarking_sheet(
 
 
 _SC_N_COLS = 8
-_SC_COL_WIDTHS = {1: 22, 2: 40, 3: 22, 4: 22, 5: 22, 6: 20, 7: 22, 8: 22}
+# Column widths matched to reference
+_SC_COL_WIDTHS = {1: 19.13, 2: 21.63, 3: 22.0, 4: 25.75, 5: 16.0, 7: 25.88, 8: 19.5}
 
 _SC_SUMMARY_HEADERS_TPL = [
     "Category", "Total Prompts", "{brand} Mentioned", "Mention Rate",
@@ -256,14 +321,6 @@ _SC_DETAIL_HEADERS_TPL = [
 ]
 
 
-def _sc_write_headers(ws: Worksheet, row: int, headers: list[str]) -> None:
-    for col_idx, h in enumerate(headers, start=1):
-        c = ws.cell(row=row, column=col_idx, value=h)
-        c.font = HEADER_FONT
-        c.fill = HEADER_FILL
-        c.alignment = WRAP_TOP
-
-
 def _build_sentiment_cooccurrence_sheet(
     ws: Worksheet,
     summary_rows: list[SummaryRow],
@@ -275,11 +332,11 @@ def _build_sentiment_cooccurrence_sheet(
     n = _SC_N_COLS
     r = 1
 
-    # R1: title bar
+    # R1: title (dark navy text, no fill)
     _merge_write(
         ws, r, n,
         f"Sentiment & Co-Occurrence — {brand_name} — {date_range_str}",
-        TITLE_FONT, TITLE_FILL, height=24,
+        TITLE_FONT_SC,
     )
     r += 1
 
@@ -287,10 +344,10 @@ def _build_sentiment_cooccurrence_sheet(
     r += 1
 
     # --- Section 1: Sentiment Analysis Summary ---
-    _merge_write(ws, r, n, "Sentiment Analysis Summary", SECTION_FONT, SECTION_FILL, height=20)
+    _merge_write(ws, r, n, "Sentiment Analysis Summary", SECTION_FONT)
     r += 1
     summary_headers = [h.replace("{brand}", brand_name) for h in _SC_SUMMARY_HEADERS_TPL]
-    _sc_write_headers(ws, r, summary_headers)
+    _write_header_row(ws, r, summary_headers)
     r += 1
     for sr in summary_rows:
         values = [
@@ -298,9 +355,10 @@ def _build_sentiment_cooccurrence_sheet(
             sr.mention_rate, sr.avg_sentiment_score,
             sr.positive_count, sr.neutral_count, sr.negative_count,
         ]
+        is_overall = sr.category == "OVERALL"
         for col_idx, v in enumerate(values, start=1):
             c = ws.cell(row=r, column=col_idx, value=v)
-            c.font = DATA_FONT
+            c.font = DATA_FONT_BOLD if is_overall else DATA_FONT
             c.alignment = WRAP_TOP
             c.border = THIN_GRAY
         r += 1
@@ -308,10 +366,10 @@ def _build_sentiment_cooccurrence_sheet(
     r += 2  # 2 blank rows
 
     # --- Section 2: Co-Occurrence Analysis ---
-    _merge_write(ws, r, n, "Co-Occurrence Analysis", SECTION_FONT, SECTION_FILL, height=20)
+    _merge_write(ws, r, n, "Co-Occurrence Analysis", SECTION_FONT)
     r += 1
     coocc_headers = [h.replace("{brand}", brand_name) for h in _SC_COOCC_HEADERS]
-    _sc_write_headers(ws, r, coocc_headers)
+    _write_header_row(ws, r, coocc_headers)
     r += 1
     if not coocc_rows:
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
@@ -334,10 +392,10 @@ def _build_sentiment_cooccurrence_sheet(
     r += 2  # 2 blank rows
 
     # --- Section 3: Detailed Sentiment by Prompt ---
-    _merge_write(ws, r, n, "Detailed Sentiment by Prompt", SECTION_FONT, SECTION_FILL, height=20)
+    _merge_write(ws, r, n, "Detailed Sentiment by Prompt", SECTION_FONT)
     r += 1
     detail_headers = [h.replace("{brand}", brand_name) for h in _SC_DETAIL_HEADERS_TPL]
-    _sc_write_headers(ws, r, detail_headers)
+    _write_header_row(ws, r, detail_headers)
     r += 1
     if not detailed_rows:
         ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
@@ -359,56 +417,3 @@ def _build_sentiment_cooccurrence_sheet(
 
     for col_idx, width in _SC_COL_WIDTHS.items():
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
-
-
-def _build_source_attribution_sheet(
-    ws: Worksheet,
-    rows: list[SourceRow],
-    brand_name: str,
-    date_range_str: str,
-) -> None:
-    ws.merge_cells("A1:F1")
-    title_cell = ws["A1"]
-    title_cell.value = f"Source Attribution Tracking — {brand_name} — {date_range_str}"
-    title_cell.font = TITLE_FONT
-    title_cell.fill = TITLE_FILL
-    ws.row_dimensions[1].height = 24
-
-    ws.merge_cells("A2:F2")
-    sub_cell = ws["A2"]
-    sub_cell.value = "Client Sources"
-    sub_cell.font = SECTION_FONT
-    sub_cell.fill = SECTION_FILL
-    ws.row_dimensions[2].height = 20
-
-    headers = [
-        "Domain", "Source URL", "Content Type", "Topic",
-        "Platform Citations", "Citation Count",
-    ]
-    for col_idx, header in enumerate(headers, start=1):
-        c = ws.cell(row=3, column=col_idx, value=header)
-        c.font = HEADER_FONT
-        c.fill = HEADER_FILL
-        c.alignment = WRAP_TOP
-
-    if not rows:
-        msg = ws.cell(row=4, column=1, value="No source data in the selected date range.")
-        msg.font = EMPTY_SECTION_FONT
-        ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=6)
-    else:
-        for row_idx, sr in enumerate(rows, start=4):
-            values = [
-                sr.domain, sr.source_url, sr.content_type,
-                sr.topic, sr.platform_citations, sr.citation_count,
-            ]
-            for col_idx, v in enumerate(values, start=1):
-                c = ws.cell(row=row_idx, column=col_idx, value=v)
-                c.font = DATA_FONT
-                c.alignment = WRAP_TOP
-                c.border = THIN_GRAY
-
-    widths = {1: 25, 2: 60, 3: 25, 4: 30, 5: 30, 6: 15}
-    for col_idx, width in widths.items():
-        ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
-
-    ws.freeze_panes = "A4"

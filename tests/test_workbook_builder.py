@@ -87,9 +87,9 @@ def test_source_attribution_tab_data_starts_at_row_4(built_wb):
     assert ws.cell(row=4, column=1).value != "Domain"
 
 
-def test_source_attribution_tab_freeze_panes_at_A4(built_wb):
+def test_source_attribution_tab_no_freeze_panes(built_wb):
     ws = built_wb["Source Attribution Tracking"]
-    assert str(ws.freeze_panes) == "A4"
+    assert ws.freeze_panes is None
 
 
 def test_benchmarking_tab_has_title_in_A1(built_wb):
@@ -283,3 +283,90 @@ def test_bm_tab_categories_in_DB_CB_CO_order(bm_wb):
             positions.append((r, v))
     found = [cat for _, cat in positions]
     assert found == cats
+
+
+# ---------------------------------------------------------------------------
+# Styling regression tests (hardcoded from reference workbook, Step 10)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def styled_wb(tmp_path):
+    from src.peec_client import Chat
+    from src.matchers import LabeledChat
+    from src.prompt_library import PromptEntry
+
+    chat = Chat(
+        id="ch_1", model="chatgpt-scraper", model_channel="ChatGPT",
+        prompt="Test", response="Test Brand is great", country="US",
+        position=1, mentions=["Test Brand", "Competitor A"],
+        sources=["https://example.com"], sentiment=75.0, created="2026-05-01",
+    )
+    lc = LabeledChat(chat=chat, prompt_id="DB-01", category="Direct Brand Queries")
+    library = {"DB-01": PromptEntry("DB-01", "Test prompt", "Direct Brand Queries", "", "")}
+    path = build_workbook([lc], library, BRAND, DATE_RANGE, tmp_path / "styled.xlsx")
+    return openpyxl.load_workbook(path)
+
+
+def test_styling_sa_title_row(styled_wb):
+    ws = styled_wb["Source Attribution Tracking"]
+    c = ws["A1"]
+    assert c.font.name == "Proxima Nova"
+    assert c.font.size == 15
+    assert c.font.bold is True
+    assert c.font.color.rgb == "FF152534"
+    assert c.fill.fill_type is None
+    assert c.alignment.horizontal == "center"
+
+
+def test_styling_sa_header_row(styled_wb):
+    ws = styled_wb["Source Attribution Tracking"]
+    c = ws.cell(row=3, column=1)
+    assert c.font.name == "Proxima Nova"
+    assert c.font.bold is True
+    assert c.font.color.rgb == "FFFFFFFF"
+    assert c.fill.fgColor.rgb == "FFE2216B"
+    assert c.alignment.horizontal == "center"
+
+
+def test_styling_sa_no_freeze_panes(styled_wb):
+    assert styled_wb["Source Attribution Tracking"].freeze_panes is None
+
+
+def test_styling_apr_title_row(styled_wb):
+    ws = styled_wb["AI Platform Response Tracking"]
+    c = ws["A1"]
+    assert c.font.name == "Proxima Nova"
+    assert c.font.color.rgb == "FFE21A6B"
+    assert c.fill.fill_type is None
+
+
+def test_styling_apr_header_fill(styled_wb):
+    ws = styled_wb["AI Platform Response Tracking"]
+    # Header row is row 5 (title + blank + platform section + category section + headers)
+    for row in range(1, 20):
+        cell = ws.cell(row=row, column=1)
+        if cell.value == "Prompt ID":
+            assert cell.fill.fgColor.rgb == "FFE21A6B"
+            assert cell.font.color.rgb == "FFFFFFFF"
+            return
+    pytest.fail("Header row not found")
+
+
+def test_styling_bm_title_row(styled_wb):
+    ws = styled_wb["Benchmarking"]
+    c = ws["A1"]
+    assert c.font.name == "Proxima Nova"
+    assert c.font.size == 15
+    assert c.font.color.rgb == "FF1F4E79"
+    assert c.fill.fill_type is None
+    assert c.alignment.horizontal == "center"
+    assert ws.column_dimensions["E"].width == 105.75
+
+
+def test_styling_sc_title_row(styled_wb):
+    ws = styled_wb["Sentiment & Co-Occurrence"]
+    c = ws["A1"]
+    assert c.font.name == "Proxima Nova"
+    assert c.font.size == 12
+    assert c.font.color.rgb == "FF152534"
+    assert c.fill.fill_type is None
