@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 import traceback
+from collections import defaultdict
 from datetime import date, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -174,6 +175,69 @@ def _handle_validate(inputs: dict) -> None:
             st.error(f"❌ Peec API error: {e}")
 
 
+_CAT_ORDER = {
+    "Direct Brand Queries": 0,
+    "Category-Based Queries": 1,
+    "Comparison Queries": 2,
+}
+
+
+def _pid_sort_key(pid: str) -> tuple:
+    m = re.match(r"([A-Za-z]+)-(\d+)", pid)
+    return (m.group(1).upper(), int(m.group(2))) if m else (pid, 0)
+
+
+def _render_chat_validation(matched: list, prompt_library: dict) -> None:
+    """Show one representative chat per prompt so the user can verify correct matching."""
+    by_prompt: dict = defaultdict(list)
+    for lc in matched:
+        by_prompt[lc.prompt_id].append(lc)
+
+    sorted_pids = sorted(
+        prompt_library.keys(),
+        key=lambda pid: (_CAT_ORDER.get(prompt_library[pid].category, 99), _pid_sort_key(pid)),
+    )
+
+    rows = []
+    missing = 0
+    for pid in sorted_pids:
+        entry = prompt_library[pid]
+        lcs = by_prompt.get(pid, [])
+        prompt_display = (entry.text[:80] + "…") if len(entry.text) > 80 else entry.text
+        if lcs:
+            lc = max(lcs, key=lambda x: x.chat.created)
+            preview = lc.chat.response[:150] + ("…" if len(lc.chat.response) > 150 else "")
+            rows.append({
+                "Prompt ID": pid,
+                "Category": entry.category,
+                "Prompt": prompt_display,
+                "Status": "✅",
+                "Platform": lc.chat.model_channel,
+                "Date": lc.chat.created,
+                "Mentions": ", ".join(lc.chat.mentions) if lc.chat.mentions else "—",
+                "Response Preview": preview or "—",
+            })
+        else:
+            missing += 1
+            rows.append({
+                "Prompt ID": pid,
+                "Category": entry.category,
+                "Prompt": prompt_display,
+                "Status": "❌ No match",
+                "Platform": "—",
+                "Date": "—",
+                "Mentions": "—",
+                "Response Preview": "—",
+            })
+
+    if missing:
+        st.warning(f"⚠ {missing} prompt(s) have no matching chat. Check the unmatched list above.")
+    else:
+        st.success(f"All {len(prompt_library)} prompts matched to a chat.")
+
+    st.dataframe(rows, use_container_width=True)
+
+
 def _handle_build(inputs: dict) -> None:
     api_key = _get_api_key()
     if not api_key:
@@ -226,6 +290,9 @@ def _handle_build(inputs: dict) -> None:
             with st.expander("Show first 10 unmatched prompts"):
                 for c in unmatched[:10]:
                     st.write(c.chat.prompt[:200])
+
+        with st.expander("📋 Chat Validation — 1 chat per prompt", expanded=True):
+            _render_chat_validation(matched, library)
 
         with st.spinner("Analyzing…"):
             pass  # analyzers run inside build_workbook

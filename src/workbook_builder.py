@@ -12,6 +12,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 from src.analyzers.ai_platform_response import (
     CATEGORIES_ORDERED,
     PlatformResponseRow,
+    _brand_mentioned,
+    _prompt_sort_key,
     build_ai_platform_response,
 )
 from src.analyzers.benchmarking import BenchmarkRow, build_benchmarking
@@ -59,6 +61,18 @@ _APR_COLS = len(_APR_HEADERS)
 _APR_DATA_ROW_HEIGHT = 112.5
 
 
+_CPE_N_COLS = 12
+_CPE_HEADERS = [
+    "Prompt ID", "Category", "Prompt Text", "Platform", "Date", "Country",
+    "Brand Mentioned?", "Position", "Sentiment Score", "Co-Mentions",
+    "Sources/Citations", "Response",
+]
+_CPE_COL_WIDTHS = {
+    1: 12.0, 2: 25.0, 3: 50.0, 4: 15.0, 5: 12.0, 6: 12.0,
+    7: 16.0, 8: 12.0, 9: 15.0, 10: 30.0, 11: 50.0, 12: 80.0,
+}
+
+
 def build_workbook(
     chats: list[LabeledChat],
     prompt_library: dict[str, PromptEntry],
@@ -69,6 +83,9 @@ def build_workbook(
     """Create the output workbook at output_path. Returns the path."""
     wb = Workbook()
     wb.remove(wb.active)
+
+    cpe_ws = wb.create_sheet("Consolidated Prompt Export")
+    _build_consolidated_export_sheet(cpe_ws, chats, prompt_library, brand_name, date_range_str)
 
     sa_rows = build_source_attribution(chats)
     sa_ws = wb.create_sheet("Source Attribution Tracking")
@@ -122,6 +139,74 @@ def _write_header_row(ws: Worksheet, row: int, headers: list[str]) -> None:
         c.font = HEADER_FONT
         c.fill = HEADER_FILL
         c.alignment = HEADER_ALIGN
+
+
+def _build_consolidated_export_sheet(
+    ws: Worksheet,
+    chats: list[LabeledChat],
+    prompt_library: dict[str, PromptEntry],
+    brand_name: str,
+    date_range_str: str,
+) -> None:
+    n = _CPE_N_COLS
+    r = 1
+
+    _merge_write(
+        ws, r, n,
+        f"Consolidated Prompt Export — {brand_name} — {date_range_str}",
+        TITLE_FONT_SC,
+        alignment=Alignment(horizontal="center"),
+    )
+    r += 2  # title + blank
+
+    _write_header_row(ws, r, _CPE_HEADERS)
+    r += 1
+
+    if not chats:
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=n)
+        ws.cell(row=r, column=1, value="No chats in the selected date range.").font = EMPTY_SECTION_FONT
+        for col_idx, width in _CPE_COL_WIDTHS.items():
+            ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
+        return
+
+    _cat_order = {cat: i for i, cat in enumerate(CATEGORIES_ORDERED)}
+    bn_lower = brand_name.lower()
+
+    def _sort_key(lc: LabeledChat) -> tuple:
+        entry = prompt_library.get(lc.prompt_id)
+        cat = entry.category if entry else ""
+        return (_cat_order.get(cat, 99), _prompt_sort_key(lc.prompt_id), lc.chat.created)
+
+    for lc in sorted(chats, key=_sort_key):
+        entry = prompt_library.get(lc.prompt_id)
+        mentioned = _brand_mentioned(lc.chat, brand_name)
+        co_mentions = ", ".join(
+            m for m in lc.chat.mentions
+            if bn_lower not in m.lower() and m.lower() not in bn_lower
+        )
+        values = [
+            lc.prompt_id,
+            entry.category if entry else "",
+            entry.text if entry else lc.chat.prompt,
+            lc.chat.model_channel,
+            lc.chat.created,
+            lc.chat.country,
+            "Yes" if mentioned else "No",
+            str(lc.chat.position) if lc.chat.position is not None else "—",
+            f"{lc.chat.sentiment:.1f}" if lc.chat.sentiment is not None else "—",
+            co_mentions or "—",
+            "\n".join(lc.chat.sources) if lc.chat.sources else "—",
+            lc.chat.response,
+        ]
+        for col_idx, v in enumerate(values, start=1):
+            c = ws.cell(row=r, column=col_idx, value=v)
+            c.font = DATA_FONT
+            c.alignment = WRAP_TOP
+            c.border = THIN_GRAY
+        r += 1
+
+    for col_idx, width in _CPE_COL_WIDTHS.items():
+        ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
 
 def _build_source_attribution_sheet(

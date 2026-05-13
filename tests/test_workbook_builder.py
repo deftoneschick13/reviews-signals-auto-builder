@@ -10,6 +10,7 @@ from src.workbook_builder import build_workbook
 BRAND = "Test Brand"
 DATE_RANGE = "2026-04-01 to 2026-05-01"
 SHEET_NAMES = [
+    "Consolidated Prompt Export",
     "Source Attribution Tracking",
     "AI Platform Response Tracking",
     "Sentiment & Co-Occurrence",
