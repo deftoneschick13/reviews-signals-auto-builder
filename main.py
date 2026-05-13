@@ -3,8 +3,15 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import streamlit as st
+from dotenv import load_dotenv
+import os
 
 from src.prompt_library import PromptLibraryError, read_prompt_library
+from src.peec_client import fetch_chats, PeecError
+from src.matchers import match_chats_to_prompts
+from src.workbook_builder import build_workbook
+
+load_dotenv()
 
 st.title("Reviews Signals Auto-Builder")
 
@@ -42,10 +49,48 @@ if uploaded_file is not None:
         )
 
 if st.button("Build Workbook"):
-    st.write({
-        "project_id": project_id,
-        "brand_name": brand_name,
-        "start_date": str(start_date),
-        "end_date": str(end_date),
-        "file": uploaded_file.name if uploaded_file else None,
-    })
+    errors = []
+    if not project_id:
+        errors.append("Peec Project ID is required.")
+    if not brand_name:
+        errors.append("Brand Name is required.")
+    if "prompt_library" not in st.session_state:
+        errors.append("Upload a Reviews Signals workbook first.")
+    if errors:
+        for e in errors:
+            st.error(e)
+        st.stop()
+
+    api_key = os.environ.get("PEEC_API_KEY", "")
+    if not api_key:
+        st.error("PEEC_API_KEY not found in .env file.")
+        st.stop()
+
+    date_range_str = f"{start_date} to {end_date}"
+
+    with st.spinner("Fetching chats from Peec…"):
+        try:
+            chats = fetch_chats(project_id, start_date, end_date, api_key)
+        except PeecError as e:
+            st.error(f"Peec API error: {e}")
+            st.stop()
+
+    st.info(f"Fetched {len(chats)} ChatGPT chats.")
+
+    with st.spinner("Matching chats to prompts…"):
+        matched, unmatched = match_chats_to_prompts(chats, st.session_state.prompt_library)
+
+    st.info(f"Matched {len(matched)} chats ({len(unmatched)} unmatched).")
+
+    with st.spinner("Building workbook…"):
+        output_path = Path("/tmp/output.xlsx")
+        build_workbook(matched, st.session_state.prompt_library, brand_name, date_range_str, output_path)
+        xlsx_bytes = output_path.read_bytes()
+
+    st.success("Workbook ready!")
+    st.download_button(
+        label="Download Reviews Signals Workbook",
+        data=xlsx_bytes,
+        file_name=f"Reviews_Signals_{brand_name.replace(' ', '_')}_{end_date}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
