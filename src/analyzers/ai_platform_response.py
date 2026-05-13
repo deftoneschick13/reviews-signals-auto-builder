@@ -7,6 +7,7 @@ co-mentions, citations, and a chat snapshot.
 v1: ChatGPT only.
 """
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Optional
@@ -20,6 +21,8 @@ from src.config import (
 )
 from src.matchers import LabeledChat
 from src.prompt_library import Category, PromptEntry
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -212,4 +215,5 @@ def build_ai_platform_response(
 
             result[platform][category] = rows
 
+    log.info("build_ai_platform_response: %d input chats → %d platforms", len(chats), len(result))
     return result

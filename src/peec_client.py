@@ -1,5 +1,6 @@
 """Peec REST API client. Returns typed Chat objects."""
 
+import logging
 import time
 from dataclasses import dataclass
 from datetime import date
@@ -13,6 +14,8 @@ from src.config import (
     PEEC_MAX_RETRIES,
     PEEC_PAGE_SIZE,
 )
+
+log = logging.getLogger(__name__)
 
 # Maps Peec model_channel.id → human-readable platform name used in INCLUDED_PLATFORMS
 _CHANNEL_TO_PLATFORM: dict[str, str] = {
@@ -77,11 +80,13 @@ def _request(url: str, params: dict, api_key: str) -> dict:
         if resp.status_code == 200:
             return resp.json()
         if resp.status_code in (401, 403):
+            log.error("Peec auth failure: %s", resp.status_code)
             raise PeecAuthError(resp.text)
         if resp.status_code == 429:
             if attempt == PEEC_MAX_RETRIES:
                 raise PeecRateLimitError(resp.text)
             wait = int(resp.headers.get("Retry-After", 2 ** attempt))
+            log.warning("Rate limited by Peec (attempt %d/%d), retrying in %ds", attempt + 1, PEEC_MAX_RETRIES, wait)
             time.sleep(wait)
             continue
         raise PeecAPIError(f"{resp.status_code}: {resp.text}")
@@ -128,6 +133,8 @@ def fetch_chats(
 
     Returns Chat objects in the order returned by the API.
     """
+    log.info("fetch_chats: project=%s  %s → %s", project_id, start_date, end_date)
+
     # 1. Paginated list of chat stubs from /chats
     stubs: list[dict] = []
     offset = 0
@@ -146,6 +153,7 @@ def fetch_chats(
         page = page_data.get("data", [])
         stubs.extend(page)
         total = page_data.get("totalCount", 0)
+        log.debug("fetch_chats: fetched page offset=%d, got %d stubs (total=%d)", offset, len(page), total)
         if not page or len(stubs) >= total:
             break
         offset += len(page)
@@ -208,4 +216,5 @@ def fetch_chats(
             created=_str(stub.get("date", "")),
         ))
 
+    log.info("fetch_chats: returning %d chats for %d included-platform stubs", len(result), len(stubs))
     return result

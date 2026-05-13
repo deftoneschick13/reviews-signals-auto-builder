@@ -1,8 +1,11 @@
 """Generates the output Reviews Signals .xlsx workbook from analyzer results."""
 
+import logging
 from pathlib import Path
 
 from openpyxl import Workbook
+
+log = logging.getLogger(__name__)
 from openpyxl.styles import Alignment
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -86,6 +89,7 @@ def build_workbook(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
+    log.info("build_workbook: saved %d chats → %s", len(chats), output_path)
     return output_path
 
 

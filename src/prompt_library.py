@@ -1,8 +1,11 @@
 """Reads the Prompt Library tab from the uploaded Reviews Signals workbook."""
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+log = logging.getLogger(__name__)
 
 import openpyxl
 
@@ -54,9 +57,11 @@ def read_prompt_library(workbook_path: Path | str) -> dict[str, PromptEntry]:
     - Duplicate prompt IDs.
     - A row has a prompt_id but no text.
     """
+    log.info("read_prompt_library: opening %s", workbook_path)
     try:
         wb = openpyxl.load_workbook(workbook_path, data_only=True)
     except Exception as exc:
+        log.error("read_prompt_library: cannot open workbook: %s", exc)
         raise PromptLibraryError(f"Cannot open workbook: {exc}") from exc
 
     target = next(
@@ -116,4 +121,8 @@ def read_prompt_library(workbook_path: Path | str) -> dict[str, PromptEntry]:
     if not entries:
         raise PromptLibraryError("No prompt entries found in 'Prompt Library' tab.")
 
+    by_cat = {}
+    for e in entries.values():
+        by_cat[e.category] = by_cat.get(e.category, 0) + 1
+    log.info("read_prompt_library: loaded %d prompts — %s", len(entries), by_cat)
     return entries

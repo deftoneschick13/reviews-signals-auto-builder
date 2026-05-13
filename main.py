@@ -1,8 +1,10 @@
+import logging
 import os
 import re
 import tempfile
 import traceback
 from datetime import date, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import streamlit as st
@@ -20,6 +22,13 @@ from src.workbook_builder import build_workbook
 
 load_dotenv()
 
+_log_dir = Path("logs")
+_log_dir.mkdir(exist_ok=True)
+_handler = RotatingFileHandler(_log_dir / "run.log", maxBytes=1_000_000, backupCount=3)
+_handler.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
+log = logging.getLogger(__name__)
+
 st.set_page_config(page_title="Reviews Signals Auto-Builder", layout="wide")
 
 
@@ -34,12 +43,12 @@ def _render_sidebar() -> dict:
             "Peec Project ID",
             key="project_id",
             help="The Peec project ID for the client you're analyzing.",
-        )
+        ).strip()
         brand_name = st.text_input(
             "Brand Name",
             key="brand_name",
             help="The focal brand. Used for matching mentions, excluding from competitor lists, and labeling columns.",
-        )
+        ).strip()
         start_date = st.date_input(
             "Start Date",
             key="start_date",
@@ -175,6 +184,33 @@ def _handle_build(inputs: dict) -> None:
     brand_name = inputs["brand_name"]
     start_date = inputs["start_date"]
     end_date = inputs["end_date"]
+
+    if start_date >= end_date:
+        st.error("❌ Start Date must be before End Date.")
+        st.session_state.last_build_path = None
+        return
+
+    _days = (end_date - start_date).days
+    if _days > 365:
+        confirmed = st.session_state.get("wide_range_confirmed", False)
+        if not confirmed:
+            st.warning(
+                f"⚠ Date range is {_days} days (over 365). "
+                "This may take a long time and return a very large dataset. "
+                "Check the box below to confirm and click Build again."
+            )
+            st.checkbox("I understand — proceed with the wide date range", key="wide_range_confirmed")
+            st.session_state.last_build_path = None
+            return
+    else:
+        st.session_state.pop("wide_range_confirmed", None)
+
+    log.info(
+        "build started: project=%s brand=%r start=%s end=%s prompts=%d",
+        inputs["project_id"], brand_name,
+        start_date, end_date,
+        len(library),
+    )
     date_range_str = f"{start_date.isoformat()} to {end_date.isoformat()}"
 
     try:
@@ -229,6 +265,7 @@ def _handle_build(inputs: dict) -> None:
         st.error(f"❌ File not found: {e}")
     except Exception:
         st.session_state.last_build_path = None
+        log.error("unexpected build error", exc_info=True)
         st.error("❌ Unexpected error. See details below.")
         with st.expander("Show stack trace"):
             st.code(traceback.format_exc())

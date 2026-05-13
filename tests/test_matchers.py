@@ -90,3 +90,15 @@ def test_empty_prompt_library_returns_all_unmatched():
 
     assert len(matched) == 0
     assert len(unmatched) == 2
+
+
+def test_chat_prompt_with_trailing_whitespace_matches_library_entry():
+    """A chat prompt with surrounding whitespace still matches via normalization."""
+    library = {
+        "DB-01": PromptEntry("DB-01", "Tell me about Brand X", "Direct Brand Queries", "", ""),
+    }
+    chats = [_chat("  Tell me about Brand X  ", "ch_1")]
+    matched, unmatched = match_chats_to_prompts(chats, library)
+    assert len(matched) == 1
+    assert matched[0].prompt_id == "DB-01"
+    assert unmatched == []

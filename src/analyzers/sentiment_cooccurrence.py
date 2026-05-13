@@ -1,5 +1,6 @@
 """Sentiment & Co-Occurrence analyzer."""
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -11,6 +12,8 @@ from src.config import (
 )
 from src.matchers import LabeledChat
 from src.prompt_library import PromptEntry
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -236,4 +239,5 @@ def build_sentiment_cooccurrence(
             key_observations="",
         ))
 
+    log.info("build_sentiment_cooccurrence: %d chats → %d summary rows, %d coocc, %d detailed", len(chats), len(summary_rows), len(cooccurrence_rows), len(detailed_rows))
     return summary_rows, cooccurrence_rows, detailed_rows

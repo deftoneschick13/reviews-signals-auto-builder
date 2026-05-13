@@ -134,3 +134,52 @@ def test_raises_when_zero_entries_found(tmp_path):
 
     with pytest.raises(PromptLibraryError, match="No prompt entries"):
         read_prompt_library(path)
+
+
+def test_handles_workbook_with_extra_unrelated_tabs(tmp_path):
+    """Only the Prompt Library tab is read; other tabs are ignored."""
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    wb.create_sheet("Sales Data")
+    ws = wb.create_sheet("Prompt Library")
+    ws.append(["Direct Brand Queries"])
+    ws.append(["Prompt ID", "Prompt Text", "Intent", "Priority"])
+    ws.append(["DB-01", "Tell me about Brand X", "Awareness", "High"])
+    wb.create_sheet("Another Sheet")
+    path = tmp_path / "extra_tabs.xlsx"
+    wb.save(path)
+
+    library = read_prompt_library(path)
+    assert len(library) == 1
+    assert "DB-01" in library
+
+
+def test_handles_prompt_text_with_leading_trailing_whitespace(tmp_path):
+    """Prompt text with surrounding whitespace is stripped on read."""
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet("Prompt Library")
+    ws.append(["Direct Brand Queries"])
+    ws.append(["Prompt ID", "Prompt Text", "Intent", "Priority"])
+    ws.append(["DB-01", "  Tell me about Brand X  ", "Awareness", "High"])
+    path = tmp_path / "whitespace.xlsx"
+    wb.save(path)
+
+    library = read_prompt_library(path)
+    assert library["DB-01"].text == "Tell me about Brand X"
+
+
+def test_handles_intent_and_priority_as_empty_strings(tmp_path):
+    """Rows with blank Intent and Priority are accepted and stored as ''."""
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    ws = wb.create_sheet("Prompt Library")
+    ws.append(["Direct Brand Queries"])
+    ws.append(["Prompt ID", "Prompt Text", "Intent", "Priority"])
+    ws.append(["DB-01", "Tell me about Brand X", None, None])
+    path = tmp_path / "empty_intent.xlsx"
+    wb.save(path)
+
+    library = read_prompt_library(path)
+    assert library["DB-01"].intent == ""
+    assert library["DB-01"].priority == ""

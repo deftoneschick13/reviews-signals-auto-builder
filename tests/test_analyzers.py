@@ -751,3 +751,78 @@ def test_bm_competitor_counted_once_per_chat_not_per_mention_occurrence():
     comp_row = next(r for r in result["Direct Brand Queries"] if r.brand == "Competitor A")
     # 2 chats mention it — mention_rate denominator is 1 prompt
     assert comp_row.mention_rate == "1/1 (100%)"
+
+
+# ---------------------------------------------------------------------------
+# Cross-analyzer edge cases
+# ---------------------------------------------------------------------------
+
+def test_all_analyzers_handle_empty_chat_list():
+    """Each analyzer returns empty/zero-state output without exceptions."""
+    apr = build_ai_platform_response([], {}, BRAND)
+    assert apr == {}
+
+    sa = build_source_attribution([])
+    assert sa == []
+
+    summary, coocc, detailed = build_sentiment_cooccurrence([], {}, BRAND)
+    assert len(summary) == 4  # 3 categories + OVERALL, all zero
+    assert coocc == []
+    assert detailed == []
+
+    bm = build_benchmarking([], {}, BRAND)
+    assert set(bm.keys()) == {"Direct Brand Queries", "Category-Based Queries", "Comparison Queries"}
+    for rows in bm.values():
+        assert rows[0].brand == BRAND
+        assert rows[0].mention_rate == "0/0 (—)"
+
+
+def test_all_analyzers_handle_prompt_library_with_one_category_empty():
+    """Zero entries in Comparison Queries; other categories work normally."""
+    library = {"DB-01": PromptEntry("DB-01", "Prompt 1", "Direct Brand Queries", "", "")}
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[BRAND]))]
+
+    apr = build_ai_platform_response(chats, library, BRAND)
+    assert apr["ChatGPT"]["Comparison Queries"] == []
+    assert len(apr["ChatGPT"]["Direct Brand Queries"]) == 1
+
+    bm = build_benchmarking(chats, library, BRAND)
+    assert bm["Comparison Queries"][0].mention_rate == "0/0 (—)"
+
+
+def test_apr_chat_with_empty_mentions_and_brand_in_response():
+    """Response-text fallback still counts as brand mentioned when mentions is empty."""
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[], response=f"{BRAND} is great"))]
+    rows = _get_rows(chats)
+    assert rows[0].brand_mentioned == "Y"
+
+
+def test_apr_chat_with_sentiment_exactly_zero():
+    """Sentiment of 0.0 is a real score, not treated as None."""
+    chats = [_apr_labeled(_apr_chat("ch_1", mentions=[BRAND], sentiment=0.0))]
+    rows = _get_rows(chats)
+    assert rows[0].sentiment_score == "0.0"
+    assert rows[0].sentiment_label == "Negative"
+
+
+def test_sc_handles_chats_with_no_sources():
+    """Co-occurrence and summary produce sensible output even with no sources."""
+    chats = [_sc_labeled(_sc_chat("ch_1", mentions=["Competitor A"]))]
+    summary, coocc, detailed = _sc(chats)
+    assert len(coocc) == 1
+    assert coocc[0].brand_or_entity == "Competitor A"
+    assert all(r.total_prompts >= 0 for r in summary)
+
+
+def test_bm_handles_category_where_focal_brand_has_zero_chats():
+    """A category with no chats for focal brand still emits a 0/0 (—) row."""
+    library = _bm_library(**{
+        "DB-01": ("DB", "Direct Brand Queries"),
+        "CB-01": ("CB", "Category-Based Queries"),
+    })
+    chats = [_bm_labeled(_bm_chat("ch_1", mentions=[BRAND]), prompt_id="DB-01")]
+    result = build_benchmarking(chats, library, BRAND)
+    cb_rows = result["Category-Based Queries"]
+    assert cb_rows[0].brand == BRAND
+    assert cb_rows[0].mention_rate == "0/0 (—)"
+    assert cb_rows[0].avg_position == "-"

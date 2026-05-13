@@ -1,6 +1,9 @@
 """Labels Chat objects with prompt_id and category by matching against the Prompt Library."""
 
+import logging
 from dataclasses import dataclass
+
+log = logging.getLogger(__name__)
 
 from src.peec_client import Chat
 from src.prompt_library import Category, PromptEntry
@@ -51,4 +54,5 @@ def match_chats_to_prompts(
         else:
             unmatched.append(chat)
 
+    log.info("match_chats_to_prompts: %d matched, %d unmatched (of %d total)", len(matched), len(unmatched), len(chats))
     return matched, unmatched

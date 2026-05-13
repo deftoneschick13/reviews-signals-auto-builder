@@ -3,10 +3,13 @@
 Deduplicates URLs cited across all chats and counts citations per URL.
 """
 
+import logging
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 from src.matchers import LabeledChat
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,4 +71,5 @@ def build_source_attribution(chats: list[LabeledChat]) -> list[SourceRow]:
     ]
 
     rows.sort(key=lambda r: (-r.citation_count, r.domain, r.source_url))
+    log.info("build_source_attribution: %d input chats → %d rows", len(chats), len(rows))
     return rows

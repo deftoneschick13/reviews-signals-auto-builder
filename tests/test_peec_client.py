@@ -324,3 +324,33 @@ def test_fetch_chats_strips_whitespace_from_string_fields():
 
     assert chats[0].prompt == "Padded prompt"
     assert chats[0].response == "Padded response"
+
+
+def test_handles_url_without_scheme_in_sources():
+    """sources list entry with no http:// scheme is still returned as-is."""
+    assert _str_list(["plain.com/path"]) == ["plain.com/path"]
+
+
+def test_str_list_handles_list_input():
+    """_str_list with a real list strips each element."""
+    assert _str_list(["  Brand A  ", "Brand B", ""]) == ["Brand A", "Brand B"]
+
+
+def test_str_list_returns_empty_for_unrecognised_type():
+    """_str_list with a non-str, non-list, non-None returns []."""
+    assert _str_list(42) == []
+
+
+@responses.activate
+def test_handles_response_with_zero_chats():
+    """Empty data array returns empty list without exception."""
+    responses.add(
+        responses.GET,
+        f"{BASE}/chats",
+        json={"data": [], "totalCount": 0},
+        status=200,
+    )
+    _mock_prompts()
+
+    chats = fetch_chats(PROJECT_ID, START, END, API_KEY)
+    assert chats == []

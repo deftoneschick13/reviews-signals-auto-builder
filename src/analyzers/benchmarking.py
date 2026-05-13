@@ -1,5 +1,6 @@
 """Benchmarking analyzer."""
 
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -7,6 +8,8 @@ from src.analyzers.ai_platform_response import CATEGORIES_ORDERED, _brand_mentio
 from src.config import MAX_COMPETITORS_PER_BENCHMARK
 from src.matchers import LabeledChat
 from src.prompt_library import Category, PromptEntry
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -115,4 +118,5 @@ def build_benchmarking(
 
         result[category] = [focal_row] + comp_rows
 
+    log.info("build_benchmarking: %d chats → %d categories", len(chats), len(result))
     return result
