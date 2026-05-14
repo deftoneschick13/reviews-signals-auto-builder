@@ -1,5 +1,12 @@
 # Reviews Signals Auto-Builder
 
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.x-FF4B4B?logo=streamlit&logoColor=white)
+![openpyxl](https://img.shields.io/badge/openpyxl-xlsx-217346?logo=microsoftexcel&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-29%20passed-brightgreen?logo=pytest&logoColor=white)
+![License](https://img.shields.io/badge/license-proprietary-lightgrey)
+![Built for](https://img.shields.io/badge/built%20for-Propellic-E21A6B)
+
 A local Streamlit tool that pulls Peec AI chat data via API and produces a
 populated Reviews Signals .xlsx workbook for Propellic.
 
@@ -18,7 +25,7 @@ range, then populates four output tabs in a downloadable .xlsx:
 
 | Tab | Data fields (auto) | Judgment fields (left blank) |
 |---|---|---|
-| Source Attribution | Domain, URL, Platform Citations, Citation Count | Content Type, Topic |
+| Source Attribution | Domain, URL, Title, URL Type, Domain Type, Brand Mentioned, Platform Citations, Citation Count, Retrieval Count, Citation Rate — auto-sectioned by Client / Competitor / Editorial / Other | Topic |
 | AI Platform Response | Brand Mentioned?, Position, Sentiment Score, Sentiment, Co-Mentions, Sources/Citations, Chat Snapshot | Context Analysis, Notes |
 | Sentiment & Co-Occurrence | Summary counts, Mention rates, Avg sentiment, Per-prompt sentiment scores, Co-occurrence counts | Relationship Type, Typical Position, Key Associations, Opportunity/Threat, Key Observations |
 | Benchmarking | Mention Rate, Avg. Position, Avg. Sentiment per brand per category | Dominant Themes |
