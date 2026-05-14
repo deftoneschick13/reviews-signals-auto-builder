@@ -17,6 +17,7 @@ from src.peec_client import (
     PeecAuthError,
     PeecRateLimitError,
     fetch_chats,
+    fetch_url_report,
 )
 from src.prompt_library import PromptLibraryError, read_prompt_library
 from src.workbook_builder import build_workbook
@@ -282,6 +283,11 @@ def _handle_build(inputs: dict) -> None:
             chats = fetch_chats(inputs["project_id"], start_date, end_date, api_key, brand_name=brand_name)
         st.info(f"Fetched {len(chats)} chats.")
 
+        with st.spinner("Fetching URL report from Peec…"):
+            url_records = fetch_url_report(inputs["project_id"], start_date, end_date, api_key, brand_name=brand_name)
+        if url_records:
+            st.info(f"Fetched {len(url_records)} URL records for Source Attribution.")
+
         with st.spinner("Matching chats to prompts…"):
             matched, unmatched = match_chats_to_prompts(chats, library)
         st.info(f"Matched {len(matched)} chats ({len(unmatched)} unmatched).")
@@ -303,7 +309,7 @@ def _handle_build(inputs: dict) -> None:
         output_path = Path(f"/tmp/reviews_signals_{slug}_{timestamp}.xlsx")
 
         with st.spinner("Building workbook…"):
-            build_workbook(matched, library, brand_name, date_range_str, output_path)
+            build_workbook(matched, library, brand_name, date_range_str, output_path, url_records=url_records)
 
         st.session_state.last_build_path = str(output_path)
         st.success(f"✅ Workbook built: {output_path.name}")

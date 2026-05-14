@@ -1,10 +1,11 @@
-"""Peec REST API client. Returns typed Chat objects."""
+"""Peec REST API client. Returns typed Chat and UrlRecord objects."""
 
 import logging
 import time
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -38,6 +39,20 @@ _CHANNEL_TO_PLATFORM: dict[str, str] = {
     "amazon-0": "Rufus",
     "qwen-0": "Qwen",
 }
+
+
+@dataclass(frozen=True)
+class UrlRecord:
+    """A single URL citation record from the Peec /url-report endpoint."""
+    url: str
+    domain: str
+    title: str
+    url_type: str           # Homepage, Profile, Article, Listicle, etc.
+    domain_type: str        # Corporate, Competitor, Editorial, UGC, etc.
+    brand_mentioned: bool   # True if focal brand appears in mentioned_brand_ids
+    citation_count: int
+    retrieval_count: int
+    citation_rate: float
 
 
 @dataclass(frozen=True)
@@ -116,6 +131,13 @@ def _str_list(v) -> list[str]:
     if isinstance(v, str):
         return [s.strip() for s in v.splitlines() if s.strip()]
     return []
+
+
+def _extract_domain(url: str) -> str:
+    netloc = urlparse(url).netloc
+    if netloc:
+        return netloc
+    return url.split("/")[0] if "/" in url else url
 
 
 def _lookup_brand_id(project_id: str, brand_name: str, api_key: str) -> str | None:
@@ -343,4 +365,131 @@ def fetch_chats(
         ))
 
     log.info("fetch_chats: returning %d chats for %d included-platform stubs", len(result), len(stubs))
+    return result
+
+
+def fetch_url_report(
+    project_id: str,
+    start_date: date,
+    end_date: date,
+    api_key: str,
+    brand_name: str = "",
+) -> list[UrlRecord]:
+    """Fetch URL-level citation data from Peec /url-report endpoint.
+
+    Also calls /domain-report to get domain classifications (Corporate,
+    Competitor, Editorial, etc.) which drive Source Attribution sectioning.
+    Gracefully returns [] on any API failure so the build continues.
+    """
+    log.info("fetch_url_report: project=%s  %s → %s  brand=%r", project_id, start_date, end_date, brand_name)
+
+    # 1. Domain classifications from /domain-report
+    domain_types: dict[str, str] = {}
+    try:
+        dom_resp = _request(
+            f"{PEEC_BASE_URL}/domain-report",
+            [
+                ("project_id", project_id),
+                ("start_date", start_date.isoformat()),
+                ("end_date", end_date.isoformat()),
+                ("limit", "5000"),
+            ],
+            api_key,
+        )
+        columns = dom_resp.get("columns")
+        rows = dom_resp.get("rows") or []
+        if columns and rows:
+            try:
+                d_idx = columns.index("domain")
+                c_idx = columns.index("classification")
+            except ValueError:
+                pass
+            else:
+                for row in rows:
+                    d = row[d_idx]
+                    if d:
+                        domain_types[str(d)] = _str(row[c_idx]) or "Other"
+        else:
+            for item in dom_resp.get("data", []):
+                d = item.get("domain")
+                if d:
+                    domain_types[str(d)] = _str(item.get("classification")) or "Other"
+    except PeecError as e:
+        log.warning("fetch_url_report: /domain-report failed: %s", e)
+
+    # 2. Brand ID for brand_mentioned flag
+    brand_id: str | None = None
+    if brand_name:
+        brand_id = _lookup_brand_id(project_id, brand_name, api_key)
+
+    # 3. URL report from /url-report
+    try:
+        url_resp = _request(
+            f"{PEEC_BASE_URL}/url-report",
+            [
+                ("project_id", project_id),
+                ("start_date", start_date.isoformat()),
+                ("end_date", end_date.isoformat()),
+                ("limit", "5000"),
+            ],
+            api_key,
+        )
+    except PeecError as e:
+        log.warning("fetch_url_report: /url-report failed: %s", e)
+        return []
+
+    result: list[UrlRecord] = []
+    columns = url_resp.get("columns")
+    rows = url_resp.get("rows") or []
+
+    if columns and rows:
+        try:
+            url_idx = columns.index("url")
+            cls_idx = columns.index("classification")
+            title_idx = columns.index("title")
+            cite_idx = columns.index("citation_count")
+            ret_idx = columns.index("retrieval_count")
+            rate_idx = columns.index("citation_rate")
+            bid_idx = columns.index("mentioned_brand_ids")
+        except ValueError as exc:
+            log.warning("fetch_url_report: unexpected columns %s: %s", columns, exc)
+            return []
+        for row in rows:
+            url = _str(row[url_idx])
+            if not url:
+                continue
+            domain = _extract_domain(url)
+            bids = row[bid_idx] or []
+            result.append(UrlRecord(
+                url=url,
+                domain=domain,
+                title=_str(row[title_idx]),
+                url_type=_str(row[cls_idx]) or "Other",
+                domain_type=domain_types.get(domain, "Other"),
+                brand_mentioned=bool(brand_id and brand_id in bids),
+                citation_count=int(row[cite_idx]) if row[cite_idx] is not None else 0,
+                retrieval_count=int(row[ret_idx]) if row[ret_idx] is not None else 0,
+                citation_rate=float(row[rate_idx]) if row[rate_idx] is not None else 0.0,
+            ))
+    else:
+        for item in url_resp.get("data", []):
+            url = _str(item.get("url", ""))
+            if not url:
+                continue
+            domain = _extract_domain(url)
+            bids = item.get("mentioned_brand_ids") or []
+            result.append(UrlRecord(
+                url=url,
+                domain=domain,
+                title=_str(item.get("title", "")),
+                url_type=_str(item.get("classification")) or "Other",
+                domain_type=domain_types.get(domain, "Other"),
+                brand_mentioned=bool(brand_id and brand_id in bids),
+                citation_count=_int_or_none(item.get("citation_count")) or 0,
+                retrieval_count=_int_or_none(item.get("retrieval_count")) or 0,
+                citation_rate=_float_or_none(item.get("citation_rate")) or 0.0,
+            ))
+
+    log.info("fetch_url_report: %d URL records fetched", len(result))
+    result.sort(key=lambda r: -r.citation_count)
     return result

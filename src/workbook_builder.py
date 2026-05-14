@@ -79,6 +79,7 @@ def build_workbook(
     brand_name: str,
     date_range_str: str,
     output_path: Path | str,
+    url_records=None,  # list[UrlRecord] | None — from fetch_url_report
 ) -> Path:
     """Create the output workbook at output_path. Returns the path."""
     wb = Workbook()
@@ -87,7 +88,7 @@ def build_workbook(
     cpe_ws = wb.create_sheet("Consolidated Prompt Export")
     _build_consolidated_export_sheet(cpe_ws, chats, prompt_library, brand_name, date_range_str)
 
-    sa_rows = build_source_attribution(chats)
+    sa_rows = build_source_attribution(chats, url_records)
     sa_ws = wb.create_sheet("Source Attribution Tracking")
     _build_source_attribution_sheet(sa_ws, sa_rows, brand_name, date_range_str)
 
@@ -209,56 +210,108 @@ def _build_consolidated_export_sheet(
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
 
+_SA_HEADERS = [
+    "Domain", "Source URL", "Title", "URL Type", "Domain Type",
+    "Brand Mentioned", "Topic", "Platform Citations",
+    "Citation Count", "Retrieval Count", "Citation Rate",
+]
+_SA_N_COLS = len(_SA_HEADERS)
+_SA_COL_WIDTHS = {
+    1: 30.0, 2: 60.0, 3: 45.0, 4: 20.0, 5: 18.0,
+    6: 16.0, 7: 35.0, 8: 22.0, 9: 15.0, 10: 15.0, 11: 14.0,
+}
+
+# Section names in display order — used to write section headers and group rows
+_SA_SECTIONS = [
+    "Client Sources",
+    "Competitor Sources",
+    "Editorial & Reference Sources",
+    "UGC & Other Sources",
+]
+
+
+def _sa_write_section_header(ws: Worksheet, row: int, label: str) -> None:
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=_SA_N_COLS)
+    c = ws.cell(row=row, column=1, value=label)
+    c.font = SECTION_FONT_SA_SUB
+
+
+def _sa_write_headers(ws: Worksheet, row: int) -> None:
+    for col_idx, header in enumerate(_SA_HEADERS, start=1):
+        c = ws.cell(row=row, column=col_idx, value=header)
+        c.font = HEADER_FONT
+        c.fill = HEADER_FILL_SA
+        c.alignment = HEADER_ALIGN
+
+
+def _sa_write_data_row(ws: Worksheet, row: int, sr: SourceRow) -> None:
+    values = [
+        sr.domain, sr.source_url, sr.title, sr.url_type, sr.domain_type,
+        "Yes" if sr.brand_mentioned else "No",
+        sr.topic, sr.platform_citations,
+        sr.citation_count, sr.retrieval_count,
+        round(sr.citation_rate, 2) if sr.citation_rate else "",
+    ]
+    for col_idx, v in enumerate(values, start=1):
+        c = ws.cell(row=row, column=col_idx, value=v)
+        c.font = DATA_FONT
+        c.alignment = WRAP_TOP
+        c.border = THIN_GRAY
+
+
 def _build_source_attribution_sheet(
     ws: Worksheet,
     rows: list[SourceRow],
     brand_name: str,
     date_range_str: str,
 ) -> None:
-    # R1: title (no fill, dark navy text, centered)
-    ws.merge_cells("A1:F1")
+    # R1: title
+    ws.merge_cells(f"A1:{chr(ord('A') + _SA_N_COLS - 1)}1")
     title_cell = ws["A1"]
     title_cell.value = f"Source Attribution Tracking — {brand_name} — {date_range_str}"
     title_cell.font = TITLE_FONT
     title_cell.alignment = Alignment(horizontal="center")
 
-    # R2: "Client Sources" section (no fill, dark navy, size 14)
-    ws.merge_cells("A2:F2")
-    sub_cell = ws["A2"]
-    sub_cell.value = "Client Sources"
-    sub_cell.font = SECTION_FONT_SA_SUB
+    has_sections = any(r.domain_type for r in rows)
 
-    # R3: column headers (SA pink fill, white text, centered)
-    headers = [
-        "Domain", "Source URL", "Content Type", "Topic",
-        "Platform Citations", "Citation Count",
-    ]
-    for col_idx, header in enumerate(headers, start=1):
-        c = ws.cell(row=3, column=col_idx, value=header)
-        c.font = HEADER_FONT
-        c.fill = HEADER_FILL_SA
-        c.alignment = HEADER_ALIGN
-
-    # R4+: data
     if not rows:
+        # Empty state — write Client Sources section + placeholder
+        _sa_write_section_header(ws, 2, "Client Sources")
+        _sa_write_headers(ws, 3)
         msg = ws.cell(row=4, column=1, value="No source data in the selected date range.")
         msg.font = EMPTY_SECTION_FONT
-        ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=6)
-    else:
+        ws.merge_cells(start_row=4, start_column=1, end_row=4, end_column=_SA_N_COLS)
+    elif not has_sections:
+        # Fallback mode (no URL report data) — flat list under Client Sources
+        _sa_write_section_header(ws, 2, "Client Sources")
+        _sa_write_headers(ws, 3)
         for row_idx, sr in enumerate(rows, start=4):
-            values = [
-                sr.domain, sr.source_url, sr.content_type,
-                sr.topic, sr.platform_citations, sr.citation_count,
-            ]
-            for col_idx, v in enumerate(values, start=1):
-                c = ws.cell(row=row_idx, column=col_idx, value=v)
-                c.font = DATA_FONT
-                c.alignment = WRAP_TOP
-                c.border = THIN_GRAY
+            _sa_write_data_row(ws, row_idx, sr)
+    else:
+        # Full sectioned mode — group rows by section
+        by_section: dict[str, list[SourceRow]] = {s: [] for s in _SA_SECTIONS}
+        for sr in rows:
+            by_section.get(sr.section, by_section["UGC & Other Sources"]).append(sr)
 
-    # Column widths matched to reference
-    widths = {1: 48.5, 2: 70.0, 3: 61.63, 4: 55.0, 5: 20.63, 6: 16.0}
-    for col_idx, width in widths.items():
+        current_row = 2
+        for section_label in _SA_SECTIONS:
+            section_rows = by_section[section_label]
+            _sa_write_section_header(ws, current_row, section_label)
+            current_row += 1
+            _sa_write_headers(ws, current_row)
+            current_row += 1
+            if not section_rows:
+                msg = ws.cell(row=current_row, column=1, value=f"No {section_label.lower()} in the selected date range.")
+                msg.font = EMPTY_SECTION_FONT
+                ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=_SA_N_COLS)
+                current_row += 1
+            else:
+                for sr in section_rows:
+                    _sa_write_data_row(ws, current_row, sr)
+                    current_row += 1
+            current_row += 1  # blank spacer between sections
+
+    for col_idx, width in _SA_COL_WIDTHS.items():
         ws.column_dimensions[chr(ord("A") + col_idx - 1)].width = width
 
 
